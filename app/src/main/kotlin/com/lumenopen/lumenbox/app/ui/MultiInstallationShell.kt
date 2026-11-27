@@ -42,6 +42,8 @@ import com.lumenopen.lumenbox.auth.OAuthExchangeOutcome
 import com.lumenopen.lumenbox.contract.ApiEnvelopeException
 import com.lumenopen.lumenbox.conversation.ConversationAndBoardCoordinator
 import com.lumenopen.lumenbox.conversation.LiveSseConnector
+import com.lumenopen.lumenbox.desktop.DesktopBinaryStreamOpener
+import com.lumenopen.lumenbox.desktop.ReadOnlyDesktopSessionCoordinator
 import com.lumenopen.lumenbox.inbox.NeedsYouInboxCoordinator
 import com.lumenopen.lumenbox.inbox.StepUpChallengeAuthenticator
 import com.lumenopen.lumenbox.relay.NoiseRelayException
@@ -63,6 +65,7 @@ enum class InstallationTab(val label: String) {
     NEEDS_YOU("待决 Needs you"),
     CONVERSATIONS("流式对话"),
     BOARD_DELIVERABLES("看板与交付物"),
+    DESKTOP_VIEWER("桌面观看"),
     DEVICES("设备与连接"),
 }
 
@@ -300,11 +303,26 @@ fun MultiInstallationShell(
                                     },
                                 )
                             }
+                            val desktopCoordinator = remember(selectedProjection.installationId) {
+                                ReadOnlyDesktopSessionCoordinator(
+                                    connectionId = selectedProjection.installationId,
+                                    store = store,
+                                    transportProvider = { personalCoordinator.activeApiTransport() },
+                                    streamOpenerProvider = {
+                                        personalCoordinator.activeRelayMux()?.let {
+                                            DesktopBinaryStreamOpener.overRelayMux(
+                                                muxProvider = { personalCoordinator.activeRelayMux() },
+                                            )
+                                        }
+                                    },
+                                )
+                            }
                             PersonalMacInstallationPane(
                                 installationId = selectedProjection.installationId,
                                 state = personalState,
                                 inboxCoordinator = inboxCoordinator,
                                 conversationCoordinator = conversationCoordinator,
+                                desktopCoordinator = desktopCoordinator,
                                 pendingOfflineActions = personalCoordinator.pendingOfflineActionCount(),
                                 pairedDevices = pairedDevices,
                                 onReconnect = {
@@ -353,11 +371,24 @@ fun MultiInstallationShell(
                                     },
                                 )
                             }
+                            val desktopCoordinator = remember(selectedProjection.installationId) {
+                                ReadOnlyDesktopSessionCoordinator(
+                                    connectionId = selectedProjection.installationId,
+                                    store = store,
+                                    transportProvider = {
+                                        organisationCoordinator.transportForOrganisation(selectedProjection.installationId)
+                                    },
+                                    streamOpenerProvider = {
+                                        organisationCoordinator.desktopStreamOpenerForOrganisation(selectedProjection.installationId)
+                                    },
+                                )
+                            }
                             OrganisationInstallationPane(
                                 projection = selectedProjection,
                                 coordinator = organisationCoordinator,
                                 inboxCoordinator = inboxCoordinator,
                                 conversationCoordinator = conversationCoordinator,
+                                desktopCoordinator = desktopCoordinator,
                                 onAccessRemoved = { orgName ->
                                     globalBannerMessage = "你在「$orgName」的访问权限已变更或设备已被移除，该组织的本地凭据与离线缓存已自动安全擦除。"
                                 },
@@ -486,6 +517,7 @@ private fun OrganisationInstallationPane(
     coordinator: OrganisationSessionCoordinator,
     inboxCoordinator: NeedsYouInboxCoordinator,
     conversationCoordinator: ConversationAndBoardCoordinator,
+    desktopCoordinator: ReadOnlyDesktopSessionCoordinator,
     onAccessRemoved: (String) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
@@ -627,6 +659,15 @@ private fun OrganisationInstallationPane(
                 )
             }
 
+            InstallationTab.DESKTOP_VIEWER -> {
+                ReadOnlyDesktopVncSection(
+                    connectionId = connectionId,
+                    isOnline = true,
+                    coordinator = desktopCoordinator,
+                    onAccessRemoved = { onAccessRemoved(projection.displayName) },
+                )
+            }
+
             InstallationTab.DEVICES -> {
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(
@@ -695,6 +736,7 @@ private fun PersonalMacInstallationPane(
     state: PersonalMacSessionState,
     inboxCoordinator: NeedsYouInboxCoordinator,
     conversationCoordinator: ConversationAndBoardCoordinator,
+    desktopCoordinator: ReadOnlyDesktopSessionCoordinator,
     pendingOfflineActions: Int,
     pairedDevices: List<PairedDeviceSummary>,
     onReconnect: () -> Unit,
@@ -846,6 +888,14 @@ private fun PersonalMacInstallationPane(
                         selectedConversationId = convId
                         activeTab = InstallationTab.CONVERSATIONS
                     },
+                )
+            }
+
+            InstallationTab.DESKTOP_VIEWER -> {
+                ReadOnlyDesktopVncSection(
+                    connectionId = installationId,
+                    isOnline = isOnline,
+                    coordinator = desktopCoordinator,
                 )
             }
 
