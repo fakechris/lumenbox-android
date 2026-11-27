@@ -55,6 +55,7 @@ class InstallationStore(
     private val random = SecureRandom()
     private val lock = Any()
     private val connections = LinkedHashMap<String, InstallationConnection>()
+    private val openOfflineStores = HashMap<String, ConnectionOfflineStore>()
 
     init {
         rootDirectory.mkdirs()
@@ -99,13 +100,35 @@ class InstallationStore(
         }
 
     /**
+     * Opens (or returns the open) per-connection encrypted offline cache sealed under this
+     * connection's own 256-bit `dbKey` from the vault (`docs/110 §2`, INV-2252).
+     */
+    fun openOfflineStore(connectionId: String): ConnectionOfflineStore {
+        val dbKey = vault.read("conn.$connectionId", "dbKey")
+            ?: throw IllegalArgumentException("No vault entry for connection $connectionId")
+        synchronized(lock) {
+            openOfflineStores[connectionId]?.let { return it }
+            val store = ConnectionOfflineStore.open(
+                connectionId = connectionId,
+                directory = File(rootDirectory, connectionId),
+                dbKey = dbKey,
+            )
+            openOfflineStores[connectionId] = store
+            return store
+        }
+    }
+
+    /**
      * Immediate remote wipe on `401 code: "access-removed"` (`docs/110 §4.5`):
-     * destroys the connection's hardware-keystore entries and deletes its isolated cache directory.
+     * closes and zeroes the offline cache's in-memory key material, destroys the connection's
+     * hardware-keystore entries, and deletes its isolated cache directory atomically.
      */
     fun wipeConnection(id: String) {
-        synchronized(lock) {
+        val store = synchronized(lock) {
             connections.remove(id)
+            openOfflineStores.remove(id)
         }
+        store?.close()
         vault.deleteNamespace("conn.$id")
         File(rootDirectory, id).deleteRecursively()
     }
