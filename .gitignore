@@ -1,0 +1,26 @@
+.DS_Store
+.gradle/
+build/
+*/build/
+local.properties
+.idea/
+*.iml
+*.apk
+*.aab
+
+# Research and competitive analysis stay out of the repo (same rule as fakechris/lumenbox):
+/research/
+/docs/research/
+/scripts/research/
+/.runtime/
+
+# Signing keystores, FCM service configs, and local secrets must never be tracked:
+.env
+.env.*
+*.keystore
+*.jks
+*.p8
+*.p12
+google-services.json
+*credentials*.json
+*secret*

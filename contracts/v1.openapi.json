@@ -1,0 +1,37 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "LumenBox Client API",
+    "version": "1.0.0",
+    "description": "Initial /api/v1 contract seed (docs/106 §4, docs/110); authoritative schema synced from fakechris/lumenbox."
+  },
+  "paths": {
+    "/api/v1/meta": {
+      "get": {
+        "operationId": "getMeta",
+        "responses": {
+          "200": { "description": "Server metadata and installation mode" }
+        }
+      }
+    },
+    "/api/v1/inbox": {
+      "get": {
+        "operationId": "listInbox",
+        "responses": {
+          "200": { "description": "Discriminated decisions waiting on the caller" }
+        }
+      }
+    },
+    "/api/v1/notifications/{seq}": {
+      "get": {
+        "operationId": "getNotificationSummary",
+        "parameters": [
+          { "name": "seq", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": { "description": "Localized notification title and summary for wake-only push" }
+        }
+      }
+    }
+  }
+}
