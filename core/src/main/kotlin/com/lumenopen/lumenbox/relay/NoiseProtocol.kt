@@ -511,11 +511,12 @@ data class ParsedPairingOffer(
     val routeId: String,
     val pairSecret: ByteArray,
     val directUrls: List<String>,
+    val expiresAtEpochMillis: Long? = null,
 ) {
     companion object {
-        fun parse(uriString: String): ParsedPairingOffer {
+        fun parse(uriString: String, nowEpochMillis: Long = System.currentTimeMillis()): ParsedPairingOffer {
             val uri = try {
-                URI(uriString)
+                URI(uriString.trim())
             } catch (e: Exception) {
                 throw NoiseRelayException("invalid_pairing_uri", "Invalid URI", e)
             }
@@ -547,9 +548,36 @@ data class ParsedPairingOffer(
             if (hostPubB64.isNullOrEmpty() || relay.isNullOrEmpty() || route.isNullOrEmpty() || secretB64.isNullOrEmpty()) {
                 throw NoiseRelayException("invalid_pairing_uri", "Missing required fragment parameters")
             }
-            val decoder = Base64.getUrlDecoder()
-            val hostPub = decoder.decode(hostPubB64)
-            val secret = decoder.decode(secretB64)
+            val expRaw = params["exp"]?.firstOrNull() ?: params["expiresAt"]?.firstOrNull()
+            val expiresAtMillis = if (!expRaw.isNullOrEmpty()) {
+                val parsedMillis = expRaw.toLongOrNull()?.let { numeric ->
+                    // Values < 10^11 are Unix seconds; >= 10^11 are Unix milliseconds.
+                    if (numeric < 100_000_000_000L) numeric * 1_000L else numeric
+                } ?: runCatching { java.time.Instant.parse(expRaw).toEpochMilli() }.getOrElse {
+                    throw NoiseRelayException("invalid_pairing_uri", "Invalid expiration timestamp in #fragment")
+                }
+                if (nowEpochMillis > parsedMillis) {
+                    throw NoiseRelayException("expired_pairing_offer", "Pairing QR code has expired")
+                }
+                parsedMillis
+            } else {
+                null
+            }
+            val decoder = try {
+                Base64.getUrlDecoder()
+            } catch (e: Exception) {
+                throw NoiseRelayException("invalid_pairing_uri", "Invalid base64url decoder", e)
+            }
+            val hostPub = try {
+                decoder.decode(hostPubB64)
+            } catch (e: IllegalArgumentException) {
+                throw NoiseRelayException("invalid_pairing_uri", "Malformed base64url hostPub", e)
+            }
+            val secret = try {
+                decoder.decode(secretB64)
+            } catch (e: IllegalArgumentException) {
+                throw NoiseRelayException("invalid_pairing_uri", "Malformed base64url pairSecret", e)
+            }
             if (secret.size != 32 || !X25519Curve.isCanonicalPublicKey(hostPub)) {
                 throw NoiseRelayException("invalid_pairing_uri", "Invalid hostPub or pairSecret")
             }
@@ -559,6 +587,7 @@ data class ParsedPairingOffer(
                 routeId = route,
                 pairSecret = secret,
                 directUrls = params["direct"] ?: emptyList(),
+                expiresAtEpochMillis = expiresAtMillis,
             )
         }
     }
