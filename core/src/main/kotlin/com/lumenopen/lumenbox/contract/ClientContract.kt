@@ -83,11 +83,14 @@ data class ServerMeta(
     val preview: List<String> = emptyList(),
 )
 
-/** Device credentials forbid `"always"` standing approvals (`docs/106 §4.2`, `docs/110 §4`). */
+/**
+ * Device credentials strictly forbid `"always"` standing approvals (`docs/106 §4.2`, `docs/110 §4.4`).
+ * Only [ONCE] (`"once"`) and [SESSION] (`"session"`) exist on mobile clients.
+ */
 @Serializable
-enum class ApprovalGrantScope {
-    @SerialName("once") ONCE,
-    @SerialName("session") SESSION,
+enum class ApprovalGrantScope(val wireName: String) {
+    @SerialName("once") ONCE("once"),
+    @SerialName("session") SESSION("session"),
 }
 
 @Serializable
@@ -99,8 +102,9 @@ data class StepUpProof(
 )
 
 /**
- * Discriminated `/api/v1/inbox` item (`docs/106 §4.2`, `docs/110 §1`):
- * unknown decision kinds decode into [Other] preserving `id` and `summary`.
+ * Discriminated `/api/v1/inbox` item (`docs/106 §4.2`, `docs/110 §1`, INV-2256):
+ * covers tool approvals (`once`/`session` + `stepUpRequired`), outbox drafts, questions,
+ * write-only secret prompts (`AskSecret`), close proposals, pauses/exceptions, and forward-compatible [Other].
  */
 @Serializable(with = InboxDecisionItemSerializer::class)
 sealed interface InboxDecisionItem {
@@ -112,30 +116,42 @@ sealed interface InboxDecisionItem {
         override val summary: String,
         val toolName: String,
         val stepUpRequired: Boolean,
+        val detail: String? = null,
     ) : InboxDecisionItem
 
     data class OutboxDraft(
         override val id: String,
         override val summary: String,
         val channel: String,
+        val recipient: String? = null,
+        val draftBody: String? = null,
     ) : InboxDecisionItem
 
     data class Question(
         override val id: String,
         override val summary: String,
         val options: List<String>,
+        val allowFreeText: Boolean = true,
     ) : InboxDecisionItem
 
     data class SecretPrompt(
         override val id: String,
         override val summary: String,
         val secretName: String,
+        val hint: String? = null,
     ) : InboxDecisionItem
 
     data class CloseProposal(
         override val id: String,
         override val summary: String,
         val workId: String,
+    ) : InboxDecisionItem
+
+    data class ExceptionRecovery(
+        override val id: String,
+        override val summary: String,
+        val workId: String,
+        val errorCode: String? = null,
     ) : InboxDecisionItem
 
     data class Other(
@@ -162,26 +178,37 @@ object InboxDecisionItemSerializer : KSerializer<InboxDecisionItem> {
                 summary = summary,
                 toolName = obj["toolName"]?.jsonPrimitive?.contentOrNull ?: "tool",
                 stepUpRequired = obj["stepUpRequired"]?.jsonPrimitive?.booleanOrNull ?: false,
+                detail = obj["detail"]?.jsonPrimitive?.contentOrNull,
             )
             "outbox_draft" -> InboxDecisionItem.OutboxDraft(
                 id = id,
                 summary = summary,
                 channel = obj["channel"]?.jsonPrimitive?.contentOrNull ?: "external",
+                recipient = obj["recipient"]?.jsonPrimitive?.contentOrNull,
+                draftBody = obj["draftBody"]?.jsonPrimitive?.contentOrNull,
             )
             "question" -> InboxDecisionItem.Question(
                 id = id,
                 summary = summary,
                 options = (obj["options"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList(),
+                allowFreeText = obj["allowFreeText"]?.jsonPrimitive?.booleanOrNull ?: true,
             )
-            "secret_prompt" -> InboxDecisionItem.SecretPrompt(
+            "secret_prompt", "ask_secret" -> InboxDecisionItem.SecretPrompt(
                 id = id,
                 summary = summary,
                 secretName = obj["secretName"]?.jsonPrimitive?.contentOrNull ?: "SECRET",
+                hint = obj["hint"]?.jsonPrimitive?.contentOrNull,
             )
             "close_proposal" -> InboxDecisionItem.CloseProposal(
                 id = id,
                 summary = summary,
                 workId = obj["workId"]?.jsonPrimitive?.contentOrNull ?: "",
+            )
+            "exception", "pause" -> InboxDecisionItem.ExceptionRecovery(
+                id = id,
+                summary = summary,
+                workId = obj["workId"]?.jsonPrimitive?.contentOrNull ?: "",
+                errorCode = obj["errorCode"]?.jsonPrimitive?.contentOrNull,
             )
             else -> InboxDecisionItem.Other(id = id, rawKind = kind, summary = summary)
         }
@@ -198,22 +225,32 @@ object InboxDecisionItemSerializer : KSerializer<InboxDecisionItem> {
                     put("kind", "tool_approval")
                     put("toolName", value.toolName)
                     put("stepUpRequired", value.stepUpRequired)
+                    value.detail?.let { put("detail", it) }
                 }
                 is InboxDecisionItem.OutboxDraft -> {
                     put("kind", "outbox_draft")
                     put("channel", value.channel)
+                    value.recipient?.let { put("recipient", it) }
+                    value.draftBody?.let { put("draftBody", it) }
                 }
                 is InboxDecisionItem.Question -> {
                     put("kind", "question")
                     put("options", JsonArray(value.options.map { JsonPrimitive(it) }))
+                    put("allowFreeText", value.allowFreeText)
                 }
                 is InboxDecisionItem.SecretPrompt -> {
                     put("kind", "secret_prompt")
                     put("secretName", value.secretName)
+                    value.hint?.let { put("hint", it) }
                 }
                 is InboxDecisionItem.CloseProposal -> {
                     put("kind", "close_proposal")
                     put("workId", value.workId)
+                }
+                is InboxDecisionItem.ExceptionRecovery -> {
+                    put("kind", "exception")
+                    put("workId", value.workId)
+                    value.errorCode?.let { put("errorCode", it) }
                 }
                 is InboxDecisionItem.Other -> put("kind", value.rawKind)
             }
