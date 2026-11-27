@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Enterprise / MDM root CA trust configuration (docs/110 §4, INV-2255):
+  - Forbids cleartext HTTP globally (docs/106 §5 R1).
+  - Trusts both Android system roots and user/MDM-installed enterprise CAs for HTTPS organisation clusters.
+    Personal mode remains cryptographically pinned end-to-end via Noise_NK / Noise_IK to the Mac's static X25519 public key.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

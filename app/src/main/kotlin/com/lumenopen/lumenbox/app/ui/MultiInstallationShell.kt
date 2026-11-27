@@ -1,5 +1,6 @@
 package com.lumenopen.lumenbox.app.ui
 
+import android.os.Build
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -35,9 +36,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.lumenopen.lumenbox.auth.OAuthExchangeOutcome
+import com.lumenopen.lumenbox.contract.ApiEnvelopeException
 import com.lumenopen.lumenbox.contract.InboxDecisionItem
 import com.lumenopen.lumenbox.relay.NoiseRelayException
 import com.lumenopen.lumenbox.relay.TransportPathMode
+import com.lumenopen.lumenbox.session.OrganisationSessionCoordinator
 import com.lumenopen.lumenbox.session.PairedDeviceSummary
 import com.lumenopen.lumenbox.session.PersonalMacSessionCoordinator
 import com.lumenopen.lumenbox.session.PersonalMacSessionState
@@ -48,49 +52,74 @@ import com.lumenopen.lumenbox.storage.NeedsYouProjection
 import com.lumenopen.lumenbox.storage.PersonalInstallationAlreadyExistsException
 import kotlinx.coroutines.launch
 
+private enum class ActiveModal { NONE, PAIR_PERSONAL_MAC, ADD_ORGANISATION }
+
 /**
- * Top-level multi-installation Compose shell (`docs/95 §4`, `docs/110 §0.2, §3`, INV-2254).
- *
- * - Cross-boundary switcher bar exposes ONLY [NeedsYouProjection] (`displayName`, `kind`,
- *   `needsYouCount` badge, and online/sleeping indicator).
- * - Personal Mac view renders the immediate `Mac 已休眠（最后在线时间）` banner upon `host_sleeping`
- *   control frames while keeping locally cached `Needs you` decisions readable offline.
+ * Top-level multi-installation Compose shell (`docs/95 §4`, `docs/110 §0.2, §3, §4`, INV-2254, INV-2255).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MultiInstallationShell(
     store: InstallationStore,
     personalCoordinator: PersonalMacSessionCoordinator,
+    organisationCoordinator: OrganisationSessionCoordinator,
     pendingDeepLinkPairUri: String?,
     onConsumeDeepLinkPairUri: () -> Unit,
+    pendingOAuthCallbackUri: String?,
+    onConsumeOAuthCallbackUri: () -> Unit,
 ) {
     val projections by store.projections.collectAsState()
     val activeId by store.activeInstallationId.collectAsState()
     val personalState by personalCoordinator.state.collectAsState()
+    val orgOnboardingState by organisationCoordinator.onboardingState.collectAsState()
     val scope = rememberCoroutineScope()
 
-    var showPairScreen by remember { mutableStateOf(false) }
+    var activeModal by remember { mutableStateOf(ActiveModal.NONE) }
     var pairInitialUri by remember { mutableStateOf<String?>(null) }
     var pairingBusy by remember { mutableStateOf(false) }
     var pairingError by remember { mutableStateOf<String?>(null) }
     var pairedDevices by remember { mutableStateOf<List<PairedDeviceSummary>>(emptyList()) }
+    var globalBannerMessage by remember { mutableStateOf<String?>(null) }
 
     val hasPersonalMac = projections.any { it.kind == InstallationConnection.Kind.PERSONAL_MAC }
+    val defaultDeviceName = remember {
+        listOfNotNull(Build.MANUFACTURER?.takeIf { it.isNotBlank() }, Build.MODEL?.takeIf { it.isNotBlank() })
+            .joinToString(" ")
+            .ifBlank { "Android Phone" }
+    }
 
     LaunchedEffect(pendingDeepLinkPairUri) {
         if (!pendingDeepLinkPairUri.isNullOrBlank()) {
             pairInitialUri = pendingDeepLinkPairUri
             pairingError = null
-            showPairScreen = true
+            activeModal = ActiveModal.PAIR_PERSONAL_MAC
             onConsumeDeepLinkPairUri()
         }
     }
 
+    LaunchedEffect(pendingOAuthCallbackUri) {
+        val callbackUri = pendingOAuthCallbackUri
+        if (!callbackUri.isNullOrBlank()) {
+            activeModal = ActiveModal.ADD_ORGANISATION
+            onConsumeOAuthCallbackUri()
+            runCatching {
+                organisationCoordinator.handleOAuthCallback(
+                    callbackUriString = callbackUri,
+                    deviceName = defaultDeviceName,
+                )
+            }.onSuccess { outcome ->
+                if (outcome is OAuthExchangeOutcome.Authenticated) {
+                    activeModal = ActiveModal.NONE
+                }
+            }
+        }
+    }
+
     LaunchedEffect(personalState) {
-        if (personalState !is PersonalMacSessionState.Unpaired) {
-            pairedDevices = runCatching { personalCoordinator.refreshPairedDevices() }.getOrDefault(emptyList())
+        pairedDevices = if (personalState !is PersonalMacSessionState.Unpaired) {
+            runCatching { personalCoordinator.refreshPairedDevices() }.getOrDefault(emptyList())
         } else {
-            pairedDevices = emptyList()
+            emptyList()
         }
     }
 
@@ -99,16 +128,27 @@ fun MultiInstallationShell(
             TopAppBar(
                 title = { Text("LumenBox") },
                 actions = {
-                    if (!hasPersonalMac && !showPairScreen) {
+                    if (activeModal == ActiveModal.NONE) {
+                        if (!hasPersonalMac) {
+                            OutlinedButton(
+                                onClick = {
+                                    pairInitialUri = null
+                                    pairingError = null
+                                    activeModal = ActiveModal.PAIR_PERSONAL_MAC
+                                },
+                                modifier = Modifier.padding(end = 6.dp),
+                            ) {
+                                Text("配对 Mac")
+                            }
+                        }
                         OutlinedButton(
                             onClick = {
-                                pairInitialUri = null
-                                pairingError = null
-                                showPairScreen = true
+                                organisationCoordinator.resetOnboarding()
+                                activeModal = ActiveModal.ADD_ORGANISATION
                             },
                             modifier = Modifier.padding(end = 8.dp),
                         ) {
-                            Text("配对个人 Mac")
+                            Text("+ 组织")
                         }
                     }
                 },
@@ -120,94 +160,143 @@ fun MultiInstallationShell(
                 .fillMaxSize()
                 .padding(innerPadding),
         ) {
-            if (showPairScreen) {
-                CameraQrPairingScreen(
-                    initialPairingUri = pairInitialUri,
-                    isBusy = pairingBusy,
-                    externalError = pairingError,
-                    onPairRequested = { qrUri, macName, devName ->
-                        pairingBusy = true
-                        pairingError = null
-                        scope.launch {
-                            try {
-                                personalCoordinator.pairAndConnect(
-                                    qrUri = qrUri,
-                                    displayName = macName,
-                                    deviceName = devName,
-                                )
-                                showPairScreen = false
-                                pairInitialUri = null
-                            } catch (_: PersonalInstallationAlreadyExistsException) {
-                                pairingError = "至多只能配对 1 台个人 Mac，请先解除当前个人 Mac 配对。"
-                            } catch (err: NoiseRelayException) {
-                                pairingError = "配对失败（${err.code}）：${err.message}"
-                            } catch (err: Throwable) {
-                                pairingError = "配对连接异常：${err.message}"
-                            } finally {
-                                pairingBusy = false
+            when (activeModal) {
+                ActiveModal.PAIR_PERSONAL_MAC -> {
+                    CameraQrPairingScreen(
+                        initialPairingUri = pairInitialUri,
+                        isBusy = pairingBusy,
+                        externalError = pairingError,
+                        onPairRequested = { qrUri, macName, devName ->
+                            pairingBusy = true
+                            pairingError = null
+                            scope.launch {
+                                try {
+                                    personalCoordinator.pairAndConnect(
+                                        qrUri = qrUri,
+                                        displayName = macName,
+                                        deviceName = devName,
+                                    )
+                                    activeModal = ActiveModal.NONE
+                                    pairInitialUri = null
+                                } catch (_: PersonalInstallationAlreadyExistsException) {
+                                    pairingError = "至多只能配对 1 台个人 Mac，请先解除当前个人 Mac 配对。"
+                                } catch (err: NoiseRelayException) {
+                                    pairingError = "配对失败（${err.code}）：${err.message}"
+                                } catch (err: Throwable) {
+                                    pairingError = "配对连接异常：${err.message}"
+                                } finally {
+                                    pairingBusy = false
+                                }
                             }
-                        }
-                    },
-                    onCancel = {
-                        showPairScreen = false
-                        pairInitialUri = null
-                        pairingError = null
-                    },
-                )
-            } else {
-                Column(modifier = Modifier.fillMaxSize()) {
-                    TopLevelInstallationSwitcherBar(
-                        projections = projections,
-                        activeInstallationId = activeId,
-                        onSelectInstallation = { id -> store.selectActiveInstallation(id) },
+                        },
+                        onCancel = {
+                            activeModal = ActiveModal.NONE
+                            pairInitialUri = null
+                            pairingError = null
+                        },
                     )
-                    HorizontalDivider()
-                    val selectedProjection = projections.firstOrNull { it.installationId == activeId }
-                        ?: projections.firstOrNull()
+                }
 
-                    if (selectedProjection == null) {
-                        EmptyInstallationsPane(
-                            onStartPersonalPairing = {
-                                pairInitialUri = null
-                                pairingError = null
-                                showPairScreen = true
-                            },
-                        )
-                    } else if (selectedProjection.kind == InstallationConnection.Kind.PERSONAL_MAC) {
-                        PersonalMacInstallationPane(
-                            state = personalState,
-                            cachedInbox = remember(personalState, selectedProjection.needsYouCount) {
-                                personalCoordinator.readCachedInboxItems()
-                            },
-                            pendingOfflineActions = remember(personalState) {
-                                personalCoordinator.pendingOfflineActionCount()
-                            },
-                            pairedDevices = pairedDevices,
-                            onReconnect = {
-                                scope.launch {
-                                    runCatching { personalCoordinator.reconnect() }
-                                }
-                            },
-                            onRefreshDevices = {
-                                scope.launch {
-                                    pairedDevices = runCatching { personalCoordinator.refreshPairedDevices() }
-                                        .getOrDefault(pairedDevices)
-                                }
-                            },
-                            onRevokeDevice = { deviceId ->
-                                scope.launch {
-                                    if (runCatching { personalCoordinator.revokePairedDevice(deviceId) }.getOrDefault(false)) {
-                                        pairedDevices = runCatching { personalCoordinator.refreshPairedDevices() }
-                                            .getOrDefault(emptyList())
+                ActiveModal.ADD_ORGANISATION -> {
+                    OrganisationSignInScreen(
+                        state = orgOnboardingState,
+                        coordinator = organisationCoordinator,
+                        onClose = { activeModal = ActiveModal.NONE },
+                    )
+                }
+
+                ActiveModal.NONE -> {
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        globalBannerMessage?.let { notice ->
+                            Card(
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(12.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        text = notice,
+                                        color = MaterialTheme.colorScheme.onErrorContainer,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    OutlinedButton(onClick = { globalBannerMessage = null }) {
+                                        Text("关闭")
                                     }
                                 }
-                            },
-                            onUnpairMac = {
-                                personalCoordinator.unpairLocalMac()
-                            },
+                            }
+                        }
+
+                        TopLevelInstallationSwitcherBar(
+                            projections = projections,
+                            activeInstallationId = activeId,
+                            onSelectInstallation = { id -> store.selectActiveInstallation(id) },
                         )
-                    } else {
-                        OrganisationSummaryPlaceholderPane(projection = selectedProjection)
+                        HorizontalDivider()
+                        val selectedProjection = projections.firstOrNull { it.installationId == activeId }
+                            ?: projections.firstOrNull()
+
+                        if (selectedProjection == null) {
+                            EmptyInstallationsPane(
+                                onStartPersonalPairing = {
+                                    pairInitialUri = null
+                                    pairingError = null
+                                    activeModal = ActiveModal.PAIR_PERSONAL_MAC
+                                },
+                                onStartOrganisationSignIn = {
+                                    organisationCoordinator.resetOnboarding()
+                                    activeModal = ActiveModal.ADD_ORGANISATION
+                                },
+                            )
+                        } else if (selectedProjection.kind == InstallationConnection.Kind.PERSONAL_MAC) {
+                            PersonalMacInstallationPane(
+                                state = personalState,
+                                cachedInbox = remember(personalState, selectedProjection.needsYouCount) {
+                                    personalCoordinator.readCachedInboxItems()
+                                },
+                                pendingOfflineActions = remember(personalState) {
+                                    personalCoordinator.pendingOfflineActionCount()
+                                },
+                                pairedDevices = pairedDevices,
+                                onReconnect = {
+                                    scope.launch {
+                                        runCatching { personalCoordinator.reconnect() }
+                                    }
+                                },
+                                onRefreshDevices = {
+                                    scope.launch {
+                                        pairedDevices = runCatching { personalCoordinator.refreshPairedDevices() }
+                                            .getOrDefault(pairedDevices)
+                                    }
+                                },
+                                onRevokeDevice = { deviceId ->
+                                    scope.launch {
+                                        if (runCatching { personalCoordinator.revokePairedDevice(deviceId) }.getOrDefault(false)) {
+                                            pairedDevices = runCatching { personalCoordinator.refreshPairedDevices() }
+                                                .getOrDefault(emptyList())
+                                        }
+                                    }
+                                },
+                                onUnpairMac = {
+                                    personalCoordinator.unpairLocalMac()
+                                },
+                            )
+                        } else {
+                            OrganisationInstallationPane(
+                                projection = selectedProjection,
+                                coordinator = organisationCoordinator,
+                                onAccessRemoved = { orgName ->
+                                    globalBannerMessage = "你在「$orgName」的访问权限已变更或设备已被移除，该组织的本地凭据与离线缓存已自动安全擦除。"
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -215,10 +304,6 @@ fun MultiInstallationShell(
     }
 }
 
-/**
- * Strict cross-boundary switcher bar: takes ONLY [NeedsYouProjection] so no messages, agents,
- * or work items ever cross installation boundaries at the top level (`docs/95 §4`).
- */
 @Composable
 fun TopLevelInstallationSwitcherBar(
     projections: List<NeedsYouProjection>,
@@ -267,7 +352,10 @@ fun TopLevelInstallationSwitcherBar(
 }
 
 @Composable
-private fun EmptyInstallationsPane(onStartPersonalPairing: () -> Unit) {
+private fun EmptyInstallationsPane(
+    onStartPersonalPairing: () -> Unit,
+    onStartOrganisationSignIn: () -> Unit,
+) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -281,8 +369,176 @@ private fun EmptyInstallationsPane(onStartPersonalPairing: () -> Unit) {
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.padding(top = 8.dp, bottom = 20.dp),
         )
-        Button(onClick = onStartPersonalPairing) {
+        Button(
+            onClick = onStartPersonalPairing,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
             Text("扫描个人 Mac 配对二维码")
+        }
+        Spacer(modifier = Modifier.height(10.dp))
+        OutlinedButton(
+            onClick = onStartOrganisationSignIn,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("连接企业组织服务器（钉钉 / 飞书）")
+        }
+    }
+}
+
+@Composable
+private fun OrganisationInstallationPane(
+    projection: NeedsYouProjection,
+    coordinator: OrganisationSessionCoordinator,
+    onAccessRemoved: (String) -> Unit,
+) {
+    val scope = rememberCoroutineScope()
+    val connectionId = projection.installationId
+    var inboxItems by remember(connectionId) {
+        mutableStateOf(coordinator.readCachedInboxItems(connectionId))
+    }
+    var devices by remember(connectionId) { mutableStateOf<List<PairedDeviceSummary>>(emptyList()) }
+    var syncError by remember(connectionId) { mutableStateOf<String?>(null) }
+
+    suspend fun refreshAll() {
+        syncError = null
+        try {
+            inboxItems = coordinator.refreshInbox(connectionId)
+            devices = coordinator.listDevices(connectionId)
+        } catch (err: ApiEnvelopeException) {
+            if (err.envelope.isAccessRemoved) {
+                onAccessRemoved(projection.displayName)
+                return
+            }
+            syncError = "同步失败（${err.envelope.code}）：${err.envelope.error}"
+        } catch (err: Throwable) {
+            syncError = err.message
+        }
+    }
+
+    LaunchedEffect(connectionId) {
+        refreshAll()
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(14.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(projection.displayName, style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "HTTPS + 15m 内存令牌 / CrossProcessFileLock 轮换凭据",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                OutlinedButton(onClick = { scope.launch { refreshAll() } }) {
+                    Text("刷新")
+                }
+            }
+        }
+
+        syncError?.let { msg ->
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    text = msg,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(12.dp),
+                )
+            }
+        }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    "Needs you 待决项（${inboxItems.size}）",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                if (inboxItems.isEmpty()) {
+                    Text("当前没有等待你处理的决策。", style = MaterialTheme.typography.bodyMedium)
+                } else {
+                    for (item in inboxItems) {
+                        HorizontalDivider()
+                        Text(item.summary, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            }
+        }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text("我的登录设备 (/api/v1/devices)", style = MaterialTheme.typography.titleMedium)
+                if (devices.isEmpty()) {
+                    Text("暂无已登记设备记录。", style = MaterialTheme.typography.bodySmall)
+                } else {
+                    for (dev in devices) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                val selfTag = if (dev.isCurrentDevice) "（本机）" else ""
+                                Text("${dev.name}$selfTag", style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    listOfNotNull(dev.platform, dev.lastSeenAt).joinToString(" · "),
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    scope.launch {
+                                        runCatching {
+                                            if (coordinator.revokeDevice(connectionId, dev.id) && !dev.isCurrentDevice) {
+                                                devices = coordinator.listDevices(connectionId)
+                                            }
+                                        }.onFailure { err ->
+                                            if (err is ApiEnvelopeException && err.envelope.isAccessRemoved) {
+                                                onAccessRemoved(projection.displayName)
+                                            }
+                                        }
+                                    }
+                                },
+                            ) {
+                                Text(if (dev.isCurrentDevice) "退出本机" else "吊销")
+                            }
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                OutlinedButton(
+                    onClick = {
+                        scope.launch {
+                            coordinator.signOut(connectionId)
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("退出该组织并擦除本地加密缓存")
+                }
+            }
         }
     }
 }
@@ -376,7 +632,6 @@ private fun PersonalMacInstallationPane(
             PersonalMacSessionState.Unpaired -> Unit
         }
 
-        // Offline-readable Needs You snapshot card
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(
                 modifier = Modifier.padding(16.dp),
@@ -403,7 +658,6 @@ private fun PersonalMacInstallationPane(
             }
         }
 
-        // Paired devices list & per-device revocation
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(
                 modifier = Modifier.padding(16.dp),
@@ -482,18 +736,5 @@ fun HostSleepingBanner(
                 Text("检查是否已唤醒")
             }
         }
-    }
-}
-
-@Composable
-private fun OrganisationSummaryPlaceholderPane(projection: NeedsYouProjection) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Text(projection.displayName, style = MaterialTheme.typography.headlineSmall)
-        Text("待决 Needs you：${projection.needsYouCount} 项", style = MaterialTheme.typography.bodyLarge)
     }
 }
