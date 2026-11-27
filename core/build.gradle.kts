@@ -21,6 +21,7 @@ dependencies {
 
 tasks.test {
     useJUnitPlatform()
+    systemProperty("junit.jupiter.execution.timeout.default", "15s")
 }
 
 openApiGenerate {

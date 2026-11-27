@@ -3,13 +3,15 @@ package com.lumenopen.lumenbox.transport
 import com.lumenopen.lumenbox.contract.ApiEnvelopeException
 import com.lumenopen.lumenbox.contract.ApiErrorEnvelope
 import com.lumenopen.lumenbox.contract.LumenBoxJson
+import com.lumenopen.lumenbox.relay.RelayMux
+import com.lumenopen.lumenbox.relay.VirtualHttpRequest
 import com.lumenopen.lumenbox.storage.InstallationStore
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.RandomAccessFile
+import java.net.HttpURLConnection
 import java.net.URI
-import java.net.http.HttpClient
-import java.net.http.HttpRequest
-import java.net.http.HttpResponse
 import java.nio.charset.StandardCharsets
 import java.util.UUID
 
@@ -51,7 +53,7 @@ class DirectHttpsTransport(
     private val connectionId: String,
     private val store: InstallationStore,
     @Volatile private var accessTokenInMemory: String? = null,
-    private val roundTrip: suspend (TransportRequest, Map<String, String>) -> TransportResponse = defaultJdkRoundTrip(baseOrigin),
+    private val roundTrip: suspend (TransportRequest, Map<String, String>) -> TransportResponse = defaultUrlConnectionRoundTrip(baseOrigin),
 ) : ApiTransport {
 
     override suspend fun send(request: TransportRequest): TransportResponse {
@@ -76,18 +78,34 @@ class DirectHttpsTransport(
     }
 
     companion object {
-        private fun defaultJdkRoundTrip(baseOrigin: String): suspend (TransportRequest, Map<String, String>) -> TransportResponse {
-            val client = HttpClient.newBuilder().build()
+        /** Uses `HttpURLConnection` so `:core` runs on both Android ART (`android.jar`) and OpenJDK 17. */
+        private fun defaultUrlConnectionRoundTrip(baseOrigin: String): suspend (TransportRequest, Map<String, String>) -> TransportResponse {
             val trimmedBase = baseOrigin.trimEnd('/')
             return { req, headers ->
-                val builder = HttpRequest.newBuilder(URI.create("$trimmedBase${req.path}"))
-                headers.forEach { (k, v) -> builder.header(k, v) }
-                val publisher = req.body?.let { HttpRequest.BodyPublishers.ofByteArray(it) }
-                    ?: HttpRequest.BodyPublishers.noBody()
-                builder.method(req.method.uppercase(), publisher)
-                val res = client.send(builder.build(), HttpResponse.BodyHandlers.ofByteArray())
-                val flatHeaders = res.headers().map().mapValues { it.value.firstOrNull().orEmpty() }
-                TransportResponse(res.statusCode(), flatHeaders, res.body())
+                withContext(Dispatchers.IO) {
+                    val conn = (URI.create("$trimmedBase${req.path}").toURL().openConnection() as HttpURLConnection).apply {
+                        requestMethod = req.method.uppercase()
+                        connectTimeout = 10_000
+                        readTimeout = 30_000
+                        headers.forEach { (k, v) -> setRequestProperty(k, v) }
+                        if (req.body != null) {
+                            doOutput = true
+                            outputStream.use { it.write(req.body) }
+                        }
+                    }
+                    try {
+                        val code = conn.responseCode
+                        val stream = if (code in 200..399) conn.inputStream else conn.errorStream
+                        val bodyBytes = stream?.use { it.readBytes() } ?: ByteArray(0)
+                        val flatHeaders = conn.headerFields
+                            .filterKeys { it != null }
+                            .mapKeys { it.key!!.lowercase() }
+                            .mapValues { it.value.firstOrNull().orEmpty() }
+                        TransportResponse(code, flatHeaders, bodyBytes)
+                    } finally {
+                        conn.disconnect()
+                    }
+                }
             }
         }
     }
@@ -111,5 +129,22 @@ class EncryptedRelayTransport(
     override suspend fun send(request: TransportRequest): TransportResponse {
         val (path, endpoint) = selectCandidate()
         return exchangeOverNoiseIk(path, endpoint, request)
+    }
+
+    companion object {
+        /** Adapts an active [RelayMux] into an [ApiTransport] carrying `/api/v1` requests with `Idempotency-Key`. */
+        fun overMux(mux: RelayMux): ApiTransport = ApiTransport { request ->
+            val merged = LinkedHashMap<String, String>(request.headers)
+            request.idempotencyKey?.let { merged["Idempotency-Key"] = it }
+            val res = mux.request(
+                VirtualHttpRequest(
+                    method = request.method,
+                    path = request.path,
+                    headers = merged,
+                    body = request.body,
+                )
+            )
+            TransportResponse(statusCode = res.status, headers = res.headers, body = res.body)
+        }
     }
 }
