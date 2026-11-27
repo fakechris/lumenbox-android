@@ -1,16 +1,38 @@
 {
-  "openapi": "3.1.0",
+  "openapi": "3.0.3",
   "info": {
     "title": "LumenBox Client API",
-    "version": "1.0.0",
-    "description": "Initial /api/v1 contract seed (docs/106 §4, docs/110); authoritative schema synced from fakechris/lumenbox."
+    "version": "1.1.0",
+    "description": "Stable /api/v1 client contract (docs/106 §4, docs/110) shared across HTTPS and multiplexed Noise_IK transports."
   },
   "paths": {
     "/api/v1/meta": {
       "get": {
         "operationId": "getMeta",
         "responses": {
-          "200": { "description": "Server metadata and installation mode" }
+          "200": {
+            "description": "Server metadata and installation mode",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GeneratedServerMeta" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/me": {
+      "get": {
+        "operationId": "getMe",
+        "responses": {
+          "200": {
+            "description": "Authenticated principal summary",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GeneratedPrincipal" }
+              }
+            }
+          }
         }
       }
     },
@@ -18,7 +40,93 @@
       "get": {
         "operationId": "listInbox",
         "responses": {
-          "200": { "description": "Discriminated decisions waiting on the caller" }
+          "200": {
+            "description": "Discriminated decisions waiting on the caller",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GeneratedInboxPage" }
+              }
+            }
+          },
+          "304": { "description": "Unchanged since If-None-Match ETag" }
+        }
+      }
+    },
+    "/api/v1/approvals/{id}": {
+      "post": {
+        "operationId": "decideApproval",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/GeneratedApprovalDecisionRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Approval recorded",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GeneratedActionAck" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/inbox/{id}/answer": {
+      "post": {
+        "operationId": "answerInboxItem",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/GeneratedInboxAnswerRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Answer recorded or secret stored in vault",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GeneratedActionAck" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/work/{id}/decisions": {
+      "post": {
+        "operationId": "decideWork",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/GeneratedWorkDecisionRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Work decision recorded",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GeneratedActionAck" }
+              }
+            }
+          }
         }
       }
     },
@@ -26,10 +134,232 @@
       "get": {
         "operationId": "getNotificationSummary",
         "parameters": [
-          { "name": "seq", "in": "path", "required": true, "schema": { "type": "integer" } }
+          { "name": "seq", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } }
         ],
         "responses": {
-          "200": { "description": "Localized notification title and summary for wake-only push" }
+          "200": {
+            "description": "Localized notification title and summary for wake-only push",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GeneratedNotificationSummary" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/conversations": {
+      "get": {
+        "operationId": "listConversations",
+        "responses": {
+          "200": {
+            "description": "Paged conversations",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GeneratedConversationPage" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/changes": {
+      "get": {
+        "operationId": "getChanges",
+        "parameters": [
+          { "name": "since", "in": "query", "required": true, "schema": { "type": "integer", "format": "int64" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Durable ledger delta since durableSeq",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GeneratedChangesResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/desktops/{agentId}/tickets": {
+      "post": {
+        "operationId": "issueDesktopTicket",
+        "parameters": [
+          { "name": "agentId", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/GeneratedDesktopTicketRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "60-second single-use view ticket",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GeneratedDesktopTicketResponse" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "GeneratedServerMeta": {
+        "type": "object",
+        "required": ["api", "server"],
+        "properties": {
+          "api": { "type": "string" },
+          "server": { "type": "string" },
+          "capabilities": { "type": "array", "items": { "type": "string" } },
+          "preview": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "GeneratedPrincipal": {
+        "type": "object",
+        "required": ["id", "name"],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "role": { "type": "string" }
+        }
+      },
+      "GeneratedInboxPage": {
+        "type": "object",
+        "required": ["items"],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/GeneratedInboxItemWire" }
+          },
+          "nextCursor": { "type": "string" }
+        }
+      },
+      "GeneratedInboxItemWire": {
+        "type": "object",
+        "required": ["id", "kind", "summary"],
+        "properties": {
+          "id": { "type": "string" },
+          "kind": { "type": "string" },
+          "summary": { "type": "string" },
+          "toolName": { "type": "string" },
+          "stepUpRequired": { "type": "boolean" },
+          "channel": { "type": "string" },
+          "options": { "type": "array", "items": { "type": "string" } },
+          "secretName": { "type": "string" },
+          "workId": { "type": "string" }
+        }
+      },
+      "GeneratedStepUpProofPayload": {
+        "type": "object",
+        "required": ["keyId", "approvalId", "decision", "signatureBase64Url"],
+        "properties": {
+          "keyId": { "type": "string" },
+          "approvalId": { "type": "string" },
+          "decision": { "type": "string" },
+          "timestampEpochSeconds": { "type": "integer", "format": "int64" },
+          "nonceBase64Url": { "type": "string" },
+          "signatureBase64Url": { "type": "string" }
+        }
+      },
+      "GeneratedApprovalDecisionRequest": {
+        "type": "object",
+        "required": ["action"],
+        "properties": {
+          "action": { "type": "string", "enum": ["allow", "deny"] },
+          "scope": { "type": "string", "enum": ["once", "session"] },
+          "reason": { "type": "string" },
+          "stepUpProof": { "$ref": "#/components/schemas/GeneratedStepUpProofPayload" }
+        }
+      },
+      "GeneratedInboxAnswerRequest": {
+        "type": "object",
+        "required": ["kind"],
+        "properties": {
+          "kind": { "type": "string" },
+          "answer": { "type": "string" },
+          "action": { "type": "string" },
+          "secretName": { "type": "string" },
+          "secretValue": { "type": "string" }
+        }
+      },
+      "GeneratedWorkDecisionRequest": {
+        "type": "object",
+        "required": ["decision"],
+        "properties": {
+          "decision": { "type": "string" },
+          "note": { "type": "string" }
+        }
+      },
+      "GeneratedActionAck": {
+        "type": "object",
+        "required": ["ok"],
+        "properties": {
+          "ok": { "type": "boolean" },
+          "durableSeq": { "type": "integer", "format": "int64" }
+        }
+      },
+      "GeneratedNotificationSummary": {
+        "type": "object",
+        "required": ["seq", "kind", "title", "body", "createdAt"],
+        "properties": {
+          "seq": { "type": "integer", "format": "int64" },
+          "kind": { "type": "string" },
+          "title": { "type": "string" },
+          "body": { "type": "string" },
+          "createdAt": { "type": "string" }
+        }
+      },
+      "GeneratedConversationSummary": {
+        "type": "object",
+        "required": ["id", "title", "agentId", "updatedAt"],
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "agentId": { "type": "string" },
+          "updatedAt": { "type": "string" },
+          "running": { "type": "boolean" }
+        }
+      },
+      "GeneratedConversationPage": {
+        "type": "object",
+        "required": ["items"],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/GeneratedConversationSummary" }
+          },
+          "nextCursor": { "type": "string" }
+        }
+      },
+      "GeneratedChangesResponse": {
+        "type": "object",
+        "required": ["durableSeq"],
+        "properties": {
+          "durableSeq": { "type": "integer", "format": "int64" },
+          "hasMore": { "type": "boolean" }
+        }
+      },
+      "GeneratedDesktopTicketRequest": {
+        "type": "object",
+        "required": ["mode"],
+        "properties": {
+          "mode": { "type": "string", "enum": ["view"] }
+        }
+      },
+      "GeneratedDesktopTicketResponse": {
+        "type": "object",
+        "required": ["ticket", "path", "expiresInSeconds"],
+        "properties": {
+          "ticket": { "type": "string" },
+          "path": { "type": "string" },
+          "wsUrl": { "type": "string" },
+          "expiresInSeconds": { "type": "integer" }
         }
       }
     }

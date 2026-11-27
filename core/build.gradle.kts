@@ -30,10 +30,25 @@ openApiGenerate {
     inputSpec.set(rootProject.file("contracts/v1.openapi.json").absolutePath)
     outputDir.set(layout.buildDirectory.dir("generated/openapi").get().asFile.absolutePath)
     packageName.set("com.lumenopen.lumenbox.generated")
+    globalProperties.set(
+        mapOf(
+            "models" to "",
+            "modelDocs" to "false",
+            "modelTests" to "false",
+        )
+    )
     additionalProperties.set(
         mapOf(
             "serializationLibrary" to "kotlinx_serialization",
             "enumPropertyNaming" to "UPPERCASE",
         )
     )
+}
+
+kotlin.sourceSets.named("main") {
+    kotlin.srcDir(layout.buildDirectory.dir("generated/openapi/src/main/kotlin"))
+}
+
+tasks.named("compileKotlin") {
+    dependsOn(tasks.named("openApiGenerate"))
 }

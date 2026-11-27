@@ -35,10 +35,14 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.lumenopen.lumenbox.app.security.StepUpBiometricGateway
 import com.lumenopen.lumenbox.auth.OAuthExchangeOutcome
 import com.lumenopen.lumenbox.contract.ApiEnvelopeException
 import com.lumenopen.lumenbox.contract.InboxDecisionItem
+import com.lumenopen.lumenbox.inbox.NeedsYouInboxCoordinator
+import com.lumenopen.lumenbox.inbox.StepUpChallengeAuthenticator
 import com.lumenopen.lumenbox.relay.NoiseRelayException
 import com.lumenopen.lumenbox.relay.TransportPathMode
 import com.lumenopen.lumenbox.session.OrganisationSessionCoordinator
@@ -54,20 +58,19 @@ import kotlinx.coroutines.launch
 
 private enum class ActiveModal { NONE, PAIR_PERSONAL_MAC, ADD_ORGANISATION }
 
-/**
- * Top-level multi-installation Compose shell (`docs/95 §4`, `docs/110 §0.2, §3, §4`, INV-2254, INV-2255).
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MultiInstallationShell(
     store: InstallationStore,
     personalCoordinator: PersonalMacSessionCoordinator,
     organisationCoordinator: OrganisationSessionCoordinator,
+    stepUpGateway: StepUpBiometricGateway? = null,
     pendingDeepLinkPairUri: String?,
     onConsumeDeepLinkPairUri: () -> Unit,
     pendingOAuthCallbackUri: String?,
     onConsumeOAuthCallbackUri: () -> Unit,
 ) {
+    val context = LocalContext.current
     val projections by store.projections.collectAsState()
     val activeId by store.activeInstallationId.collectAsState()
     val personalState by personalCoordinator.state.collectAsState()
@@ -80,6 +83,19 @@ fun MultiInstallationShell(
     var pairingError by remember { mutableStateOf<String?>(null) }
     var pairedDevices by remember { mutableStateOf<List<PairedDeviceSummary>>(emptyList()) }
     var globalBannerMessage by remember { mutableStateOf<String?>(null) }
+
+    val biometricAuthenticator: StepUpChallengeAuthenticator? = remember(stepUpGateway, context) {
+        stepUpGateway?.let { gw ->
+            StepUpChallengeAuthenticator { challenge, item ->
+                gw.signWithBiometric(
+                    context = context,
+                    title = "高危工具审批验证",
+                    subtitle = "${item.toolName}：${item.summary}",
+                    challenge = challenge,
+                )
+            }
+        }
+    }
 
     val hasPersonalMac = projections.any { it.kind == InstallationConnection.Kind.PERSONAL_MAC }
     val defaultDeviceName = remember {
@@ -256,14 +272,18 @@ fun MultiInstallationShell(
                                 },
                             )
                         } else if (selectedProjection.kind == InstallationConnection.Kind.PERSONAL_MAC) {
+                            val inboxCoordinator = remember(selectedProjection.installationId, biometricAuthenticator) {
+                                NeedsYouInboxCoordinator(
+                                    connectionId = selectedProjection.installationId,
+                                    store = store,
+                                    transportProvider = { personalCoordinator.activeApiTransport() },
+                                    stepUpAuthenticator = biometricAuthenticator,
+                                )
+                            }
                             PersonalMacInstallationPane(
                                 state = personalState,
-                                cachedInbox = remember(personalState, selectedProjection.needsYouCount) {
-                                    personalCoordinator.readCachedInboxItems()
-                                },
-                                pendingOfflineActions = remember(personalState) {
-                                    personalCoordinator.pendingOfflineActionCount()
-                                },
+                                inboxCoordinator = inboxCoordinator,
+                                pendingOfflineActions = personalCoordinator.pendingOfflineActionCount(),
                                 pairedDevices = pairedDevices,
                                 onReconnect = {
                                     scope.launch {
@@ -289,9 +309,20 @@ fun MultiInstallationShell(
                                 },
                             )
                         } else {
+                            val inboxCoordinator = remember(selectedProjection.installationId, biometricAuthenticator) {
+                                NeedsYouInboxCoordinator(
+                                    connectionId = selectedProjection.installationId,
+                                    store = store,
+                                    transportProvider = {
+                                        organisationCoordinator.transportForOrganisation(selectedProjection.installationId)
+                                    },
+                                    stepUpAuthenticator = biometricAuthenticator,
+                                )
+                            }
                             OrganisationInstallationPane(
                                 projection = selectedProjection,
                                 coordinator = organisationCoordinator,
+                                inboxCoordinator = inboxCoordinator,
                                 onAccessRemoved = { orgName ->
                                     globalBannerMessage = "你在「$orgName」的访问权限已变更或设备已被移除，该组织的本地凭据与离线缓存已自动安全擦除。"
                                 },
@@ -389,12 +420,13 @@ private fun EmptyInstallationsPane(
 private fun OrganisationInstallationPane(
     projection: NeedsYouProjection,
     coordinator: OrganisationSessionCoordinator,
+    inboxCoordinator: NeedsYouInboxCoordinator,
     onAccessRemoved: (String) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     val connectionId = projection.installationId
     var inboxItems by remember(connectionId) {
-        mutableStateOf(coordinator.readCachedInboxItems(connectionId))
+        mutableStateOf(inboxCoordinator.readCachedItems())
     }
     var devices by remember(connectionId) { mutableStateOf<List<PairedDeviceSummary>>(emptyList()) }
     var syncError by remember(connectionId) { mutableStateOf<String?>(null) }
@@ -402,7 +434,8 @@ private fun OrganisationInstallationPane(
     suspend fun refreshAll() {
         syncError = null
         try {
-            inboxItems = coordinator.refreshInbox(connectionId)
+            inboxCoordinator.flushPendingDecisions()
+            inboxItems = inboxCoordinator.refreshInbox()
             devices = coordinator.listDevices(connectionId)
         } catch (err: ApiEnvelopeException) {
             if (err.envelope.isAccessRemoved) {
@@ -464,25 +497,13 @@ private fun OrganisationInstallationPane(
             }
         }
 
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Text(
-                    "Needs you 待决项（${inboxItems.size}）",
-                    style = MaterialTheme.typography.titleMedium,
-                )
-                if (inboxItems.isEmpty()) {
-                    Text("当前没有等待你处理的决策。", style = MaterialTheme.typography.bodyMedium)
-                } else {
-                    for (item in inboxItems) {
-                        HorizontalDivider()
-                        Text(item.summary, style = MaterialTheme.typography.bodyMedium)
-                    }
-                }
-            }
-        }
+        NeedsYouInboxSection(
+            items = inboxItems,
+            isOnline = true,
+            coordinator = inboxCoordinator,
+            onItemsChanged = { inboxItems = it },
+            onAccessRemoved = { onAccessRemoved(projection.displayName) },
+        )
 
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(
@@ -546,7 +567,7 @@ private fun OrganisationInstallationPane(
 @Composable
 private fun PersonalMacInstallationPane(
     state: PersonalMacSessionState,
-    cachedInbox: List<InboxDecisionItem>,
+    inboxCoordinator: NeedsYouInboxCoordinator,
     pendingOfflineActions: Int,
     pairedDevices: List<PairedDeviceSummary>,
     onReconnect: () -> Unit,
@@ -554,6 +575,20 @@ private fun PersonalMacInstallationPane(
     onRevokeDevice: (String) -> Unit,
     onUnpairMac: () -> Unit,
 ) {
+    var inboxItems by remember(state) {
+        mutableStateOf(inboxCoordinator.readCachedItems())
+    }
+    val isOnline = state is PersonalMacSessionState.Online
+
+    LaunchedEffect(isOnline) {
+        if (isOnline) {
+            runCatching {
+                inboxCoordinator.flushPendingDecisions()
+                inboxItems = inboxCoordinator.refreshInbox()
+            }
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -632,31 +667,13 @@ private fun PersonalMacInstallationPane(
             PersonalMacSessionState.Unpaired -> Unit
         }
 
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Text(
-                    "Needs you 待决项（本地加密离线缓存：${cachedInbox.size}）",
-                    style = MaterialTheme.typography.titleMedium,
-                )
-                if (pendingOfflineActions > 0) {
-                    Text(
-                        "待同步幂等操作队列：$pendingOfflineActions 项（恢复在线后自动重放）",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-                if (cachedInbox.isEmpty()) {
-                    Text("当前没有等待你处理的决策。", style = MaterialTheme.typography.bodyMedium)
-                } else {
-                    for (item in cachedInbox) {
-                        HorizontalDivider()
-                        Text(item.summary, style = MaterialTheme.typography.bodyMedium)
-                    }
-                }
-            }
-        }
+        NeedsYouInboxSection(
+            items = inboxItems,
+            isOnline = isOnline,
+            pendingOfflineActions = pendingOfflineActions,
+            coordinator = inboxCoordinator,
+            onItemsChanged = { inboxItems = it },
+        )
 
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(
@@ -687,7 +704,7 @@ private fun PersonalMacInstallationPane(
                                 style = MaterialTheme.typography.bodySmall,
                             )
                         }
-                        if (!device.isCurrentDevice && state is PersonalMacSessionState.Online) {
+                        if (!device.isCurrentDevice && isOnline) {
                             OutlinedButton(onClick = { onRevokeDevice(device.id) }) {
                                 Text("移除")
                             }

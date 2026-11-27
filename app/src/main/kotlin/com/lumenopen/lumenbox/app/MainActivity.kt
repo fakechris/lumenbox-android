@@ -10,6 +10,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.lumenopen.lumenbox.app.security.AndroidKeyStoreVault
 import com.lumenopen.lumenbox.app.security.AndroidKeystoreStepUpSigner
+import com.lumenopen.lumenbox.app.security.StepUpBiometricGateway
 import com.lumenopen.lumenbox.app.ui.MultiInstallationShell
 import com.lumenopen.lumenbox.auth.OrganisationTokenManager
 import com.lumenopen.lumenbox.auth.PkceOAuthClient
@@ -62,6 +63,7 @@ class MainActivity : ComponentActivity() {
             },
         )
         val stepUpSigner = runCatching { AndroidKeystoreStepUpSigner() }.getOrNull()
+        val stepUpGateway = stepUpSigner?.let { StepUpBiometricGateway(it) }
         organisationCoordinator = OrganisationSessionCoordinator(
             store = installationStore,
             vault = vault,
@@ -78,6 +80,7 @@ class MainActivity : ComponentActivity() {
                     store = installationStore,
                     personalCoordinator = personalCoordinator,
                     organisationCoordinator = organisationCoordinator,
+                    stepUpGateway = stepUpGateway,
                     pendingDeepLinkPairUri = pendingPairUri,
                     onConsumeDeepLinkPairUri = { pendingPairUri = null },
                     pendingOAuthCallbackUri = pendingOAuthCallbackUri,
