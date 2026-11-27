@@ -381,115 +381,122 @@ class RelayMuxE2ETest {
                     assertEquals(TransportPathMode.DIRECT, paired.mode)
                     assertEquals("dev_pixel9", paired.deviceId)
 
-                    // 2. When LAN endpoint is unreachable, seamlessly falls back to RELAY and runs Noise_IK!
-                    val sleepNotice = CompletableDeferred<HostSleepingInfo>()
-                    val fallbackConnector = WebSocketRelayConnector(
-                        lanDiscovery = LanDiscoveryProvider { routeId, _ ->
-                            listOf(DiscoveredLanEndpoint("OfflineMac", routeId, "ws://127.0.0.1:1/unreachable"))
-                        }
-                    )
-                    val session = try {
-                        withTimeout(2_500) {
-                            fallbackConnector.connectPhoneIk(
-                                hostPublicKey = hostKp.publicKey,
-                                deviceKeypair = phoneKp,
-                                relayUrl = relayServer.url,
-                                routeId = "rt_home",
-                                initialWindowBytes = 32 * 1024,
-                                autoReplenishStreamWindow = false, // Hold window intentionally to prove flow control!
-                                onHostSleeping = { sleepNotice.complete(it) },
-                            )
-                        }
-                    } catch (e: Throwable) {
-                        throw AssertionError("Timed out at Step 2 (connectPhoneIk)", e)
-                    }
-                    assertEquals(TransportPathMode.RELAY, session.mode)
-
-                    // 3. Flow-controlled stream stalls at 32 KiB window WITHOUT blocking concurrent POST /stop!
-                    val vncStream = try {
-                        withTimeout(2_000) {
-                            session.mux.openStream(
-                                VirtualStreamRequest(StreamTarget.VNC_RO, "/vnc-ro/large")
-                            )
-                        }
-                    } catch (e: Throwable) {
-                        throw AssertionError("Timed out at Step 3a (openStream)", e)
-                    }
-                    val receivedStreamBytes = ByteArrayOutputStream()
-                    val streamOutcome = CompletableDeferred<StreamCloseOutcome>()
-                    vncStream.onData { chunk, _ -> synchronized(receivedStreamBytes) { receivedStreamBytes.write(chunk) } }
-                    vncStream.onClose { streamOutcome.complete(it) }
-
-                    // Wait briefly so the first 32 KiB window fills and pauses stream 1 on host
-                    delay(80)
-                    assertEquals(32 * 1024, synchronized(receivedStreamBytes) { receivedStreamBytes.size() })
-
-                    // Concurrent POST /stop over ApiTransport.overMux completes immediately despite stalled stream 1!
-                    val apiTransport = EncryptedRelayTransport.overMux(session.mux)
-                    val stopRes = try {
-                        withTimeout(2_000) {
-                            val stopJob = async {
-                                apiTransport.send(TransportRequest("POST", "/api/v1/conversations/c1/stop"))
+                    // 2. When LAN endpoint is unreachable OR upgrades WS then drops before ik_ready, falls back to RELAY!
+                    LoopbackWsServer { staleConn ->
+                        staleConn.onText = { staleConn.dropAbruptly() }
+                    }.use { staleLanServer ->
+                        val sleepNotice = CompletableDeferred<HostSleepingInfo>()
+                        val fallbackConnector = WebSocketRelayConnector(
+                            lanDiscovery = LanDiscoveryProvider { routeId, _ ->
+                                listOf(
+                                    DiscoveredLanEndpoint("OfflineMac", routeId, "ws://127.0.0.1:1/unreachable"),
+                                    DiscoveredLanEndpoint("StaleWsPort", routeId, staleLanServer.url),
+                                )
                             }
-                            stopJob.await()
+                        )
+                        val session = try {
+                            withTimeout(3_000) {
+                                fallbackConnector.connectPhoneIk(
+                                    hostPublicKey = hostKp.publicKey,
+                                    deviceKeypair = phoneKp,
+                                    relayUrl = relayServer.url,
+                                    routeId = "rt_home",
+                                    initialWindowBytes = 32 * 1024,
+                                    autoReplenishStreamWindow = false, // Hold window intentionally to prove flow control!
+                                    onHostSleeping = { sleepNotice.complete(it) },
+                                )
+                            }
+                        } catch (e: Throwable) {
+                            throw AssertionError("Timed out at Step 2 (connectPhoneIk)", e)
                         }
-                    } catch (e: Throwable) {
-                        throw AssertionError("Timed out at Step 3b (concurrent POST /stop)", e)
-                    }
-                    assertEquals(200, stopRes.statusCode)
-                    assertTrue(stopRes.body.toString(StandardCharsets.UTF_8).contains("stopped"))
+                        assertEquals(TransportPathMode.RELAY, session.mode)
 
-                    // Replenish window credit -> remaining 64 KiB arrives and closes with AuthenticatedEnd!
-                    vncStream.acknowledgeRead(64 * 1024)
-                    val s3Outcome = try {
-                        withTimeout(2_000) { streamOutcome.await() }
-                    } catch (e: Throwable) {
-                        throw AssertionError("Timed out at Step 3c (streamOutcome after acknowledgeRead, got=${synchronized(receivedStreamBytes) { receivedStreamBytes.size() }})", e)
-                    }
-                    assertEquals(StreamCloseOutcome.AuthenticatedEnd, s3Outcome)
-                    assertEquals(96 * 1024, synchronized(receivedStreamBytes) { receivedStreamBytes.size() })
-                    assertArrayEquals(ByteArray(96 * 1024) { 0x5a }, receivedStreamBytes.toByteArray())
-
-                    // 4. Host pre-sleep notice arrives immediately over control stream
-                    latestHostMux.get()!!.notifyHostSleeping(reason = "clamshell", at = "2026-11-27T13:50:00Z")
-                    val sleepInfo = try {
-                        withTimeout(2_000) { sleepNotice.await() }
-                    } catch (e: Throwable) {
-                        throw AssertionError("Timed out at Step 4 (host_sleeping)", e)
-                    }
-                    assertEquals(HostSleepingInfo("2026-11-27T13:50:00Z", "clamshell"), sleepInfo)
-                    session.close()
-
-                    // 5. Unauthenticated socket EOF mid-stream (without stream_end) is flagged as Truncated!
-                    val truncSession = try {
-                        withTimeout(2_000) {
-                            fallbackConnector.connectPhoneIk(
-                                hostPublicKey = hostKp.publicKey,
-                                deviceKeypair = phoneKp,
-                                relayUrl = relayServer.url,
-                                routeId = "rt_home",
-                            )
+                        // 3. Flow-controlled stream stalls at 32 KiB window WITHOUT blocking concurrent POST /stop!
+                        val vncStream = try {
+                            withTimeout(2_000) {
+                                session.mux.openStream(
+                                    VirtualStreamRequest(StreamTarget.VNC_RO, "/vnc-ro/large")
+                                )
+                            }
+                        } catch (e: Throwable) {
+                            throw AssertionError("Timed out at Step 3a (openStream)", e)
                         }
-                    } catch (e: Throwable) {
-                        throw AssertionError("Timed out at Step 5a (truncSession connect)", e)
-                    }
-                    val truncOutcome = CompletableDeferred<StreamCloseOutcome>()
-                    val truncStream = try {
-                        withTimeout(2_000) {
-                            truncSession.mux.openStream(
-                                VirtualStreamRequest(StreamTarget.VNC_RO, "/vnc-ro/truncate")
-                            )
+                        val receivedStreamBytes = ByteArrayOutputStream()
+                        val streamOutcome = CompletableDeferred<StreamCloseOutcome>()
+                        vncStream.onData { chunk, _ -> synchronized(receivedStreamBytes) { receivedStreamBytes.write(chunk) } }
+                        vncStream.onClose { streamOutcome.complete(it) }
+
+                        // Wait briefly so the first 32 KiB window fills and pauses stream 1 on host
+                        delay(80)
+                        assertEquals(32 * 1024, synchronized(receivedStreamBytes) { receivedStreamBytes.size() })
+
+                        // Concurrent POST /stop over ApiTransport.overMux completes immediately despite stalled stream 1!
+                        val apiTransport = EncryptedRelayTransport.overMux(session.mux)
+                        val stopRes = try {
+                            withTimeout(2_000) {
+                                val stopJob = async {
+                                    apiTransport.send(TransportRequest("POST", "/api/v1/conversations/c1/stop"))
+                                }
+                                stopJob.await()
+                            }
+                        } catch (e: Throwable) {
+                            throw AssertionError("Timed out at Step 3b (concurrent POST /stop)", e)
                         }
-                    } catch (e: Throwable) {
-                        throw AssertionError("Timed out at Step 5b (truncStream open)", e)
+                        assertEquals(200, stopRes.statusCode)
+                        assertTrue(stopRes.body.toString(StandardCharsets.UTF_8).contains("stopped"))
+
+                        // Replenish window credit -> remaining 64 KiB arrives and closes with AuthenticatedEnd!
+                        vncStream.acknowledgeRead(64 * 1024)
+                        val s3Outcome = try {
+                            withTimeout(2_000) { streamOutcome.await() }
+                        } catch (e: Throwable) {
+                            throw AssertionError("Timed out at Step 3c (streamOutcome after acknowledgeRead, got=${synchronized(receivedStreamBytes) { receivedStreamBytes.size() }})", e)
+                        }
+                        assertEquals(StreamCloseOutcome.AuthenticatedEnd, s3Outcome)
+                        assertEquals(96 * 1024, synchronized(receivedStreamBytes) { receivedStreamBytes.size() })
+                        assertArrayEquals(ByteArray(96 * 1024) { 0x5a }, receivedStreamBytes.toByteArray())
+
+                        // 4. Host pre-sleep notice arrives immediately over control stream
+                        latestHostMux.get()!!.notifyHostSleeping(reason = "clamshell", at = "2026-11-27T13:50:00Z")
+                        val sleepInfo = try {
+                            withTimeout(2_000) { sleepNotice.await() }
+                        } catch (e: Throwable) {
+                            throw AssertionError("Timed out at Step 4 (host_sleeping)", e)
+                        }
+                        assertEquals(HostSleepingInfo("2026-11-27T13:50:00Z", "clamshell"), sleepInfo)
+                        session.close()
+
+                        // 5. Unauthenticated socket EOF mid-stream (without stream_end) is flagged as Truncated!
+                        val truncSession = try {
+                            withTimeout(3_000) {
+                                fallbackConnector.connectPhoneIk(
+                                    hostPublicKey = hostKp.publicKey,
+                                    deviceKeypair = phoneKp,
+                                    relayUrl = relayServer.url,
+                                    routeId = "rt_home",
+                                )
+                            }
+                        } catch (e: Throwable) {
+                            throw AssertionError("Timed out at Step 5a (truncSession connect)", e)
+                        }
+                        val truncOutcome = CompletableDeferred<StreamCloseOutcome>()
+                        val truncStream = try {
+                            withTimeout(2_000) {
+                                truncSession.mux.openStream(
+                                    VirtualStreamRequest(StreamTarget.VNC_RO, "/vnc-ro/truncate")
+                                )
+                            }
+                        } catch (e: Throwable) {
+                            throw AssertionError("Timed out at Step 5b (truncStream open)", e)
+                        }
+                        truncStream.onClose { truncOutcome.complete(it) }
+                        val outcome = try {
+                            withTimeout(2_000) { truncOutcome.await() }
+                        } catch (e: Throwable) {
+                            throw AssertionError("Timed out at Step 5c (truncOutcome await)", e)
+                        }
+                        assertTrue(outcome is StreamCloseOutcome.Truncated, "Expected Truncated on unauthenticated EOF, got $outcome")
                     }
-                    truncStream.onClose { truncOutcome.complete(it) }
-                    val outcome = try {
-                        withTimeout(2_000) { truncOutcome.await() }
-                    } catch (e: Throwable) {
-                        throw AssertionError("Timed out at Step 5c (truncOutcome await)", e)
-                    }
-                    assertTrue(outcome is StreamCloseOutcome.Truncated, "Expected Truncated on unauthenticated EOF, got $outcome")
                 }
             }
         }

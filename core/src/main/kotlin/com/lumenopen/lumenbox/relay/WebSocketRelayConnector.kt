@@ -1,8 +1,13 @@
 package com.lumenopen.lumenbox.relay
 
 import com.lumenopen.lumenbox.contract.LumenBoxJson
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.job
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonArray
@@ -18,12 +23,14 @@ import java.io.EOFException
 import java.io.InputStream
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.net.SocketTimeoutException
 import java.net.URI
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Base64
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.ssl.SNIHostName
 import javax.net.ssl.SSLParameters
@@ -47,97 +54,136 @@ fun interface RelayWebSocketFactory {
 /**
  * Pure RFC 6455 WebSocket client over standard `java.net.Socket` / `javax.net.ssl.SSLSocketFactory`.
  *
- * Works identically on Android ART (API 28+) and OpenJDK 17 without `java.net.http.*` (which is
- * absent from `android.jar`), masks all client frames per RFC 6455 §5.3, replies to Ping frames,
- * and immediately fires `onClose(1006, ...)` on raw TCP EOF (`FIN`/`RST`) when no WebSocket Close
- * frame was received — guaranteeing truncation detection (`docs/110 §3.2`, `INV-2251`).
+ * - Compatible with Android API 28–35 and OpenJDK 17 (`String(bytes, StandardCharsets.US_ASCII)`).
+ * - Enforces [connectTimeoutMillis] as a total wall-clock deadline across TCP connect, TLS handshake,
+ *   and HTTP 101 header reads, closing the in-progress socket immediately on cancellation or expiry.
+ * - Caps both individual frames and reassembled fragmented messages at 32 MiB before buffering.
+ * - Immediately fires `onClose(1006, ...)` on raw TCP `FIN`/`RST` when no WebSocket Close frame arrived.
  */
 class SocketRelayWebSocketFactory(
     private val sslSocketFactory: SSLSocketFactory = SSLSocketFactory.getDefault() as SSLSocketFactory,
 ) : RelayWebSocketFactory {
+    companion object {
+        private const val MAX_MESSAGE_BYTES: Long = 32L * 1024L * 1024L
+    }
+
     private val random = SecureRandom()
 
-    override suspend fun connect(url: String, connectTimeoutMillis: Long): RelayWebSocket =
-        withContext(Dispatchers.IO) {
-            val uri = URI.create(url)
-            val scheme = uri.scheme?.lowercase()
-                ?: throw NoiseRelayException("ws_invalid_url", "Missing scheme in $url")
-            val isTls = when (scheme) {
-                "wss" -> true
-                "ws" -> false
-                else -> throw NoiseRelayException("ws_invalid_url", "Unsupported WebSocket scheme: $scheme")
-            }
-            val host = uri.host ?: throw NoiseRelayException("ws_invalid_url", "Missing host in $url")
-            val port = if (uri.port > 0) uri.port else if (isTls) 443 else 80
-            val pathAndQuery = buildString {
-                append(uri.rawPath?.takeIf { it.isNotEmpty() } ?: "/")
-                if (!uri.rawQuery.isNullOrEmpty()) {
-                    append('?')
-                    append(uri.rawQuery)
-                }
-            }
+    private fun remainingMillisOrThrow(deadlineNano: Long): Int {
+        val remNs = deadlineNano - System.nanoTime()
+        if (remNs <= 0L) {
+            throw SocketTimeoutException("WebSocket connect/upgrade exceeded total deadline")
+        }
+        return TimeUnit.NANOSECONDS.toMillis(remNs).coerceAtLeast(1L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    }
 
-            val rawSocket = Socket()
-            try {
+    override suspend fun connect(url: String, connectTimeoutMillis: Long): RelayWebSocket {
+        val callerJob = currentCoroutineContext().job
+        val deadlineNano = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(connectTimeoutMillis.coerceAtLeast(1L))
+        val rawSocket = Socket()
+        val handedOff = AtomicBoolean(false)
+        val cancelHandle = callerJob.invokeOnCompletion { cause ->
+            if (cause != null && !handedOff.get()) {
+                runCatching { rawSocket.close() }
+            }
+        }
+
+        return try {
+            val ws = withContext(Dispatchers.IO) {
+                val uri = URI.create(url)
+                val scheme = uri.scheme?.lowercase()
+                    ?: throw NoiseRelayException("ws_invalid_url", "Missing scheme in $url")
+                val isTls = when (scheme) {
+                    "wss" -> true
+                    "ws" -> false
+                    else -> throw NoiseRelayException("ws_invalid_url", "Unsupported WebSocket scheme: $scheme")
+                }
+                val host = uri.host ?: throw NoiseRelayException("ws_invalid_url", "Missing host in $url")
+                val port = if (uri.port > 0) uri.port else if (isTls) 443 else 80
+                val pathAndQuery = buildString {
+                    append(uri.rawPath?.takeIf { it.isNotEmpty() } ?: "/")
+                    if (!uri.rawQuery.isNullOrEmpty()) {
+                        append('?')
+                        append(uri.rawQuery)
+                    }
+                }
+
                 rawSocket.tcpNoDelay = true
-                rawSocket.connect(InetSocketAddress(host, port), connectTimeoutMillis.toInt())
+                rawSocket.connect(InetSocketAddress(host, port), remainingMillisOrThrow(deadlineNano))
+
                 val socket: Socket = if (isTls) {
                     (sslSocketFactory.createSocket(rawSocket, host, port, true) as SSLSocket).apply {
                         sslParameters = sslParameters.also { params: SSLParameters ->
                             params.endpointIdentificationAlgorithm = "HTTPS"
                             runCatching { params.serverNames = listOf(SNIHostName(host)) }
                         }
-                        soTimeout = connectTimeoutMillis.toInt()
+                        soTimeout = remainingMillisOrThrow(deadlineNano)
                         startHandshake()
-                        soTimeout = 0
                     }
                 } else {
                     rawSocket
                 }
 
-                val keyBytes = ByteArray(16).also { random.nextBytes(it) }
-                val secKey = Base64.getEncoder().encodeToString(keyBytes)
-                val hostHeader = if ((isTls && port == 443) || (!isTls && port == 80)) host else "$host:$port"
-                val out = socket.getOutputStream()
-                val req = (
-                    "GET $pathAndQuery HTTP/1.1\r\n" +
-                        "Host: $hostHeader\r\n" +
-                        "Upgrade: websocket\r\n" +
-                        "Connection: Upgrade\r\n" +
-                        "Sec-WebSocket-Key: $secKey\r\n" +
-                        "Sec-WebSocket-Version: 13\r\n\r\n"
-                    ).toByteArray(StandardCharsets.US_ASCII)
-                out.write(req)
-                out.flush()
+                try {
+                    val keyBytes = ByteArray(16).also { random.nextBytes(it) }
+                    val secKey = Base64.getEncoder().encodeToString(keyBytes)
+                    val hostHeader = if ((isTls && port == 443) || (!isTls && port == 80)) host else "$host:$port"
+                    val out = socket.getOutputStream()
+                    val req = (
+                        "GET $pathAndQuery HTTP/1.1\r\n" +
+                            "Host: $hostHeader\r\n" +
+                            "Upgrade: websocket\r\n" +
+                            "Connection: Upgrade\r\n" +
+                            "Sec-WebSocket-Key: $secKey\r\n" +
+                            "Sec-WebSocket-Version: 13\r\n\r\n"
+                        ).toByteArray(StandardCharsets.US_ASCII)
+                    out.write(req)
+                    out.flush()
 
-                val input = BufferedInputStream(socket.getInputStream())
-                socket.soTimeout = connectTimeoutMillis.toInt()
-                val headerText = readHttpHeaderBlock(input)
-                socket.soTimeout = 0
+                    val input = BufferedInputStream(socket.getInputStream())
+                    val headerText = readHttpHeaderBlock(socket, input, deadlineNano)
+                    socket.soTimeout = 0
 
-                val statusLine = headerText.lineSequence().firstOrNull().orEmpty()
-                if (!statusLine.startsWith("HTTP/1.1 101")) {
-                    throw NoiseRelayException("ws_upgrade_failed", "Expected 101 Switching Protocols, got: $statusLine")
+                    val statusLine = headerText.lineSequence().firstOrNull().orEmpty()
+                    if (!statusLine.startsWith("HTTP/1.1 101")) {
+                        throw NoiseRelayException("ws_upgrade_failed", "Expected 101 Switching Protocols, got: $statusLine")
+                    }
+                    val expectedAccept = Base64.getEncoder().encodeToString(
+                        MessageDigest.getInstance("SHA-1")
+                            .digest((secKey + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").toByteArray(StandardCharsets.US_ASCII))
+                    )
+                    val actualAccept = headerText.lineSequence()
+                        .firstOrNull { it.startsWith("Sec-WebSocket-Accept:", ignoreCase = true) }
+                        ?.substringAfter(':')
+                        ?.trim()
+                    if (actualAccept != expectedAccept) {
+                        throw NoiseRelayException("ws_upgrade_failed", "Invalid Sec-WebSocket-Accept header")
+                    }
+
+                    createSocketWebSocket(socket, input, out)
+                } catch (inner: Throwable) {
+                    runCatching { socket.close() }
+                    throw inner
                 }
-                val expectedAccept = Base64.getEncoder().encodeToString(
-                    MessageDigest.getInstance("SHA-1")
-                        .digest((secKey + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").toByteArray(StandardCharsets.US_ASCII))
-                )
-                val actualAccept = headerText.lineSequence()
-                    .firstOrNull { it.startsWith("Sec-WebSocket-Accept:", ignoreCase = true) }
-                    ?.substringAfter(':')
-                    ?.trim()
-                if (actualAccept != expectedAccept) {
-                    throw NoiseRelayException("ws_upgrade_failed", "Invalid Sec-WebSocket-Accept header")
-                }
-
-                createSocketWebSocket(socket, input, out)
-            } catch (e: Throwable) {
-                runCatching { rawSocket.close() }
-                if (e is NoiseRelayException) throw e
-                throw NoiseRelayException("ws_connect_failed", "Failed connecting to $url: ${e.message}", e)
             }
+
+            if (!callerJob.isActive) {
+                withContext(NonCancellable) { ws.close(1000, "Cancelled during handoff") }
+                callerJob.ensureActive()
+            }
+            handedOff.set(true)
+            ws
+        } catch (e: CancellationException) {
+            runCatching { rawSocket.close() }
+            throw e
+        } catch (e: Throwable) {
+            runCatching { rawSocket.close() }
+            if (e is NoiseRelayException) throw e
+            throw NoiseRelayException("ws_connect_failed", "Failed connecting to $url: ${e.message}", e)
+        } finally {
+            cancelHandle.dispose()
         }
+    }
 
     private fun createSocketWebSocket(
         socket: Socket,
@@ -153,7 +199,7 @@ class SocketRelayWebSocketFactory(
         fun notifyCloseOnce(code: Int, reason: String) {
             if (closedNotified.compareAndSet(false, true)) {
                 runCatching { socket.close() }
-                closeListeners.forEach { it(code, reason) }
+                closeListeners.forEach { runCatching { it(code, reason) } }
             }
         }
 
@@ -215,7 +261,7 @@ class SocketRelayWebSocketFactory(
                         len = 0L
                         for (i in 0 until 8) len = (len shl 8) or (ext[i].toLong() and 0xffL)
                     }
-                    if (len > 32L * 1024L * 1024L) {
+                    if (len < 0L || len > MAX_MESSAGE_BYTES) {
                         notifyCloseOnce(1009, "Frame exceeds 32 MiB safety cap")
                         break
                     }
@@ -233,6 +279,10 @@ class SocketRelayWebSocketFactory(
                                 notifyCloseOnce(1002, "Unexpected continuation frame")
                                 break
                             }
+                            if (fragBuffer.size().toLong() + payload.size.toLong() > MAX_MESSAGE_BYTES) {
+                                notifyCloseOnce(1009, "Fragmented message exceeds 32 MiB safety cap")
+                                break
+                            }
                             fragBuffer.write(payload)
                             if (fin) {
                                 val full = fragBuffer.toByteArray()
@@ -240,7 +290,7 @@ class SocketRelayWebSocketFactory(
                                 fragOpcode = -1
                                 fragBuffer.reset()
                                 if (completedOp == 0x1) {
-                                    val txt = full.toString(StandardCharsets.UTF_8)
+                                    val txt = String(full, StandardCharsets.UTF_8)
                                     textListeners.forEach { it(txt) }
                                 } else if (completedOp == 0x2) {
                                     binaryListeners.forEach { it(full) }
@@ -250,7 +300,7 @@ class SocketRelayWebSocketFactory(
                         0x1, 0x2 -> {
                             if (fin) {
                                 if (opcode == 0x1) {
-                                    val txt = payload.toString(StandardCharsets.UTF_8)
+                                    val txt = String(payload, StandardCharsets.UTF_8)
                                     textListeners.forEach { it(txt) }
                                 } else {
                                     binaryListeners.forEach { it(payload) }
@@ -268,7 +318,7 @@ class SocketRelayWebSocketFactory(
                                 1000
                             }
                             val closeReason = if (payload.size > 2) {
-                                payload.copyOfRange(2, payload.size).toString(StandardCharsets.UTF_8)
+                                String(payload, 2, payload.size - 2, StandardCharsets.UTF_8)
                             } else {
                                 ""
                             }
@@ -325,10 +375,11 @@ class SocketRelayWebSocketFactory(
         }
     }
 
-    private fun readHttpHeaderBlock(input: InputStream): String {
+    private fun readHttpHeaderBlock(socket: Socket, input: InputStream, deadlineNano: Long): String {
         val buf = ByteArrayOutputStream(512)
         var matched = 0
         while (buf.size() < 16_384) {
+            socket.soTimeout = remainingMillisOrThrow(deadlineNano)
             val b = input.read()
             if (b < 0) throw EOFException("EOF while reading WebSocket upgrade headers")
             buf.write(b)
@@ -340,7 +391,8 @@ class SocketRelayWebSocketFactory(
                 b == '\r'.code -> 1
                 else -> 0
             }
-            if (matched == 4) return buf.toString(StandardCharsets.US_ASCII)
+            // Use API 19+ String(byte[], Charset) constructor so Android 28–32 never hits API 33 ByteArrayOutputStream.toString(Charset)
+            if (matched == 4) return String(buf.toByteArray(), StandardCharsets.US_ASCII)
         }
         throw NoiseRelayException("ws_header_too_large", "WebSocket response headers exceeded 16 KiB")
     }
@@ -395,29 +447,17 @@ class WebSocketRelayConnector(
     private val b64Encoder = Base64.getUrlEncoder().withoutPadding()
     private val b64Decoder = Base64.getUrlDecoder()
 
-    private suspend fun openCandidateSocket(
-        explicitDirectUrls: List<String>,
-        relayUrl: String,
-        routeId: String,
-    ): Triple<RelayWebSocket, TransportPathMode, String> {
+    private suspend fun collectDirectCandidates(explicitDirectUrls: List<String>, routeId: String): List<String> {
         val discovered = runCatching {
             lanDiscovery.discoverDirectEndpoints(routeId, directProbeTimeoutMillis).map { it.wsUrl }
         }.getOrDefault(emptyList())
-
-        val directCandidates = LinkedHashSet<String>().apply {
+        return LinkedHashSet<String>().apply {
             addAll(discovered)
             addAll(explicitDirectUrls)
-        }
+        }.toList()
+    }
 
-        for (candidate in directCandidates) {
-            val directWs = runCatching {
-                socketFactory.connect(candidate, directProbeTimeoutMillis)
-            }.getOrNull()
-            if (directWs != null) {
-                return Triple(directWs, TransportPathMode.DIRECT, candidate)
-            }
-        }
-
+    private suspend fun openRelaySocket(relayUrl: String, routeId: String): RelayWebSocket {
         val relayWs = socketFactory.connect(relayUrl, relayConnectTimeoutMillis)
         val connected = CompletableDeferred<Unit>()
         relayWs.onText { text ->
@@ -455,20 +495,42 @@ class WebSocketRelayConnector(
             relayWs.close(1000, "Connect failed")
             throw err
         }
-        return Triple(relayWs, TransportPathMode.RELAY, relayUrl)
+        return relayWs
     }
 
+    /**
+     * Pairs a phone with a single-use `#fragment` QR offer (`Noise_NK`).
+     * Only falls back across candidates when connection fails BEFORE `pair_hello` is transmitted,
+     * never replaying a potentially consumed one-time `pairSecret` after an ambiguous reply drop.
+     */
     suspend fun pairPhoneWithOffer(
         offer: ParsedPairingOffer,
         deviceKeypair: X25519Keypair,
         deviceName: String,
         platform: String = "android",
     ): PairingResult {
-        val (ws, mode, selectedUrl) = openCandidateSocket(
-            explicitDirectUrls = offer.directUrls,
-            relayUrl = offer.relayUrl,
-            routeId = offer.routeId,
-        )
+        var ws: RelayWebSocket? = null
+        var selectedMode = TransportPathMode.RELAY
+        var selectedUrl = offer.relayUrl
+
+        for (candidate in collectDirectCandidates(offer.directUrls, offer.routeId)) {
+            val directWs = runCatching {
+                socketFactory.connect(candidate, directProbeTimeoutMillis)
+            }.getOrNull()
+            if (directWs != null) {
+                ws = directWs
+                selectedMode = TransportPathMode.DIRECT
+                selectedUrl = candidate
+                break
+            }
+        }
+        if (ws == null) {
+            ws = openRelaySocket(offer.relayUrl, offer.routeId)
+            selectedMode = TransportPathMode.RELAY
+            selectedUrl = offer.relayUrl
+        }
+
+        val activeWs = ws
         try {
             val reqJson = LumenBoxJson.default.encodeToString(
                 JsonObject.serializer(),
@@ -486,14 +548,14 @@ class WebSocketRelayConnector(
             )
 
             val replyDeferred = CompletableDeferred<PairingResult>()
-            ws.onText { text ->
+            activeWs.onText { text ->
                 if (replyDeferred.isCompleted) return@onText
                 val env = parseJsonObjectOrNull(text) ?: return@onText
                 if (env["type"]?.jsonPrimitive?.contentOrNull != "pair_ready") return@onText
                 val msg2B64 = env["message"]?.jsonPrimitive?.contentOrNull ?: return@onText
                 try {
                     val (plain, _) = state.completeMessage2(b64Decoder.decode(msg2B64))
-                    val replyObj = parseJsonObjectOrNull(plain.toString(StandardCharsets.UTF_8))
+                    val replyObj = parseJsonObjectOrNull(String(plain, StandardCharsets.UTF_8))
                         ?: throw NoiseRelayException("invalid_pair_reply", "Malformed pairing reply JSON")
                     val deviceId = replyObj["deviceId"]?.jsonPrimitive?.contentOrNull
                         ?: throw NoiseRelayException("invalid_pair_reply", "Missing deviceId")
@@ -502,12 +564,12 @@ class WebSocketRelayConnector(
                     val scopes = (replyObj["scopes"] as? JsonArray)
                         ?.mapNotNull { it.jsonPrimitive.contentOrNull }
                         ?: emptyList()
-                    replyDeferred.complete(PairingResult(deviceId, connId, scopes, mode, selectedUrl))
+                    replyDeferred.complete(PairingResult(deviceId, connId, scopes, selectedMode, selectedUrl))
                 } catch (err: Throwable) {
                     replyDeferred.completeExceptionally(err)
                 }
             }
-            ws.onClose { code, reason ->
+            activeWs.onClose { code, reason ->
                 if (!replyDeferred.isCompleted) {
                     replyDeferred.completeExceptionally(
                         NoiseRelayException("pair_closed", "Pairing socket closed ($code: $reason)")
@@ -515,7 +577,7 @@ class WebSocketRelayConnector(
                 }
             }
 
-            ws.sendText(
+            activeWs.sendText(
                 LumenBoxJson.default.encodeToString(
                     JsonObject.serializer(),
                     buildJsonObject {
@@ -526,26 +588,21 @@ class WebSocketRelayConnector(
             )
             return withTimeout(relayConnectTimeoutMillis) { replyDeferred.await() }
         } finally {
-            ws.close(1000, "Pairing complete")
+            activeWs.close(1000, "Pairing complete")
         }
     }
 
-    suspend fun connectPhoneIk(
+    private suspend fun handshakeIkOverSocket(
+        ws: RelayWebSocket,
+        mode: TransportPathMode,
+        selectedUrl: String,
+        timeoutMillis: Long,
         hostPublicKey: ByteArray,
         deviceKeypair: X25519Keypair,
-        relayUrl: String,
-        routeId: String,
-        directUrls: List<String> = emptyList(),
-        initialWindowBytes: Int = RelayMux.DEFAULT_INITIAL_WINDOW_BYTES,
-        autoReplenishStreamWindow: Boolean = true,
-        onHostSleeping: ((HostSleepingInfo) -> Unit)? = null,
+        initialWindowBytes: Int,
+        autoReplenishStreamWindow: Boolean,
+        onHostSleeping: ((HostSleepingInfo) -> Unit)?,
     ): ConnectedPhoneSession {
-        val (ws, mode, selectedUrl) = openCandidateSocket(
-            explicitDirectUrls = directUrls,
-            relayUrl = relayUrl,
-            routeId = routeId,
-        )
-
         val (msg1, state) = NoiseHandshakes.startIkInitiator(
             initiatorStaticKeypair = deviceKeypair,
             responderStaticPublicKey = hostPublicKey,
@@ -565,7 +622,7 @@ class WebSocketRelayConnector(
                     val msg2B64 = env["message"]?.jsonPrimitive?.contentOrNull ?: return@onText
                     try {
                         val (plain, noiseSession) = state.completeMessage2(b64Decoder.decode(msg2B64))
-                        val infoObj = parseJsonObjectOrNull(plain.toString(StandardCharsets.UTF_8))
+                        val infoObj = parseJsonObjectOrNull(String(plain, StandardCharsets.UTF_8))
                             ?: throw NoiseRelayException("invalid_ik_reply", "Malformed Noise_IK admission JSON")
                         val deviceId = infoObj["deviceId"]?.jsonPrimitive?.contentOrNull
                             ?: throw NoiseRelayException("invalid_ik_reply", "Missing deviceId")
@@ -621,11 +678,58 @@ class WebSocketRelayConnector(
         )
 
         return try {
-            withTimeout(relayConnectTimeoutMillis) { sessionDeferred.await() }
+            withTimeout(timeoutMillis) { sessionDeferred.await() }
         } catch (err: Throwable) {
             ws.close(1000, "Handshake failed")
             throw err
         }
+    }
+
+    /**
+     * Reconnects a paired phone via `Noise_IK`: commits to a `DIRECT` candidate only after full
+     * `Noise_IK` admission succeeds, falling back to the next candidate or [relayUrl] if an obsolete
+     * LAN endpoint upgrades WebSocket and drops before `ik_ready`.
+     */
+    suspend fun connectPhoneIk(
+        hostPublicKey: ByteArray,
+        deviceKeypair: X25519Keypair,
+        relayUrl: String,
+        routeId: String,
+        directUrls: List<String> = emptyList(),
+        initialWindowBytes: Int = RelayMux.DEFAULT_INITIAL_WINDOW_BYTES,
+        autoReplenishStreamWindow: Boolean = true,
+        onHostSleeping: ((HostSleepingInfo) -> Unit)? = null,
+    ): ConnectedPhoneSession {
+        for (candidate in collectDirectCandidates(directUrls, routeId)) {
+            val directSession = runCatching {
+                val ws = socketFactory.connect(candidate, directProbeTimeoutMillis)
+                handshakeIkOverSocket(
+                    ws = ws,
+                    mode = TransportPathMode.DIRECT,
+                    selectedUrl = candidate,
+                    timeoutMillis = directProbeTimeoutMillis,
+                    hostPublicKey = hostPublicKey,
+                    deviceKeypair = deviceKeypair,
+                    initialWindowBytes = initialWindowBytes,
+                    autoReplenishStreamWindow = autoReplenishStreamWindow,
+                    onHostSleeping = onHostSleeping,
+                )
+            }.getOrNull()
+            if (directSession != null) return directSession
+        }
+
+        val relayWs = openRelaySocket(relayUrl, routeId)
+        return handshakeIkOverSocket(
+            ws = relayWs,
+            mode = TransportPathMode.RELAY,
+            selectedUrl = relayUrl,
+            timeoutMillis = relayConnectTimeoutMillis,
+            hostPublicKey = hostPublicKey,
+            deviceKeypair = deviceKeypair,
+            initialWindowBytes = initialWindowBytes,
+            autoReplenishStreamWindow = autoReplenishStreamWindow,
+            onHostSleeping = onHostSleeping,
+        )
     }
 
     private fun parseJsonObjectOrNull(text: String): JsonObject? =

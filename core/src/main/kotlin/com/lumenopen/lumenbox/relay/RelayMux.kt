@@ -1,6 +1,7 @@
 package com.lumenopen.lumenbox.relay
 
 import com.lumenopen.lumenbox.contract.LumenBoxJson
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -92,9 +93,11 @@ data class HostSleepingInfo(val at: String, val reason: String)
  * Wire-compatible with `fakechris/lumenbox` `src/mobile-relay/mux.ts`:
  * - Control frames (`streamId = 0`, `KIND_CONTROL`): `http_request`, `http_response`, `stream_open`,
  *   `stream_opened`, `stream_end`, `stream_reset`, `window_update`, `host_sleeping`.
- * - Every outbound record encryption + socket write is serialized under [sendLock] so AEAD nonces stay
- *   strictly monotonic on the wire under high concurrency.
- * - Unauthenticated EOF before `stream_end` fails pending HTTP calls and marks open streams [StreamCloseOutcome.Truncated].
+ * - Every outbound record encryption + socket write is serialized under [sendLock]; if [sendWire] throws
+ *   after advancing the send cipher counter, the mux invalidates itself immediately so no later call can
+ *   reuse a desynchronized AEAD state.
+ * - Per-stream inbound delivery uses a single ordered drain loop outside [stateLock], deferring automatic
+ *   `window_update` credits until an `onData` listener actually drains queued chunks.
  */
 class RelayMux(
     val role: Role,
@@ -141,7 +144,8 @@ class RelayMux(
         val opened = CompletableDeferred<Unit>()
         val dataListeners = mutableListOf<(ByteArray, Boolean) -> Unit>()
         val closeListeners = mutableListOf<(StreamCloseOutcome) -> Unit>()
-        val earlyChunks = ArrayDeque<Pair<ByteArray, Boolean>>()
+        val deliveryQueue = ArrayDeque<Pair<ByteArray, Boolean>>()
+        var draining: Boolean = false
         var closed: Boolean = false
         var closeOutcome: StreamCloseOutcome? = null
     }
@@ -168,20 +172,38 @@ class RelayMux(
         id
     }
 
-    private fun creditForLocked(streamId: Long): OutboundCredit =
+    private fun ensureCreditLocked(streamId: Long): OutboundCredit =
         credits.getOrPut(streamId) { OutboundCredit(initialWindowBytes) }
 
     private fun sendEncryptedRecord(kind: Int, streamId: Long, payload: ByteArray) {
+        var writeFailure: Throwable? = null
         synchronized(sendLock) {
-            if (closed) return
-            val wire = RecordFramer.sealRecord(
-                cipher = session.send,
-                kind = kind,
-                streamId = streamId,
-                payload = payload,
-                maxRecordBytes = maxRecordBytes,
-            )
-            sendWire(wire)
+            if (closed) throw NoiseRelayException("mux_closed", "RelayMux is closed")
+            val wire = try {
+                RecordFramer.sealRecord(
+                    cipher = session.send,
+                    kind = kind,
+                    streamId = streamId,
+                    payload = payload,
+                    maxRecordBytes = maxRecordBytes,
+                )
+            } catch (err: Throwable) {
+                writeFailure = err
+                null
+            }
+            if (wire != null) {
+                try {
+                    sendWire(wire)
+                } catch (err: Throwable) {
+                    writeFailure = err
+                }
+            }
+        }
+        if (writeFailure != null) {
+            // Once sealRecord advanced the nonce or sendWire failed ambiguously, invalidate the mux immediately!
+            closeWithTransportError(writeFailure!!)
+            onProtocolError?.invoke(writeFailure!!)
+            throw NoiseRelayException("send_failed", "Encrypted transport write failed", writeFailure)
         }
     }
 
@@ -192,6 +214,10 @@ class RelayMux(
         sendEncryptedRecord(RecordFramer.KIND_CONTROL, CONTROL_STREAM_ID, bytes)
     }
 
+    private fun sendControlJsonBestEffort(obj: JsonObject) {
+        runCatching { sendControlJson(obj) }
+    }
+
     private suspend fun sendFlowControlled(streamId: Long, data: ByteArray, kind: Int) {
         if (data.isEmpty()) return
         var offset = 0
@@ -199,8 +225,8 @@ class RelayMux(
             var waiter: CompletableDeferred<Unit>? = null
             var step = 0
             synchronized(stateLock) {
-                val credit = creditForLocked(streamId)
-                if (closed || credit.closed) {
+                val credit = credits[streamId]
+                if (closed || credit == null || credit.closed) {
                     throw NoiseRelayException("stream_closed", "Stream $streamId closed while sending")
                 }
                 if (credit.available <= 0) {
@@ -212,8 +238,16 @@ class RelayMux(
                     credit.available -= step
                 }
             }
-            if (waiter != null) {
-                waiter!!.await()
+            val pendingWaiter = waiter
+            if (pendingWaiter != null) {
+                try {
+                    pendingWaiter.await()
+                } catch (ce: CancellationException) {
+                    synchronized(stateLock) {
+                        credits[streamId]?.waiters?.remove(pendingWaiter)
+                    }
+                    throw ce
+                }
                 continue
             }
             val slice = data.copyOfRange(offset, offset + step)
@@ -223,7 +257,7 @@ class RelayMux(
     }
 
     fun notifyHostSleeping(reason: String = "suspend", at: String = Instant.now().toString()) {
-        sendControlJson(
+        sendControlJsonBestEffort(
             buildJsonObject {
                 put("type", "host_sleeping")
                 put("at", at)
@@ -241,35 +275,54 @@ class RelayMux(
 
         synchronized(stateLock) {
             if (closed) throw NoiseRelayException("mux_closed", "RelayMux is closed")
-            creditForLocked(streamId)
+            ensureCreditLocked(streamId)
             pendingHttp[streamId] = PendingHttpCall(deferred)
         }
 
-        sendControlJson(
-            buildJsonObject {
-                put("type", "http_request")
-                put("streamId", streamId)
-                put("method", req.method)
-                put("path", req.path)
-                put(
-                    "headers",
-                    buildJsonObject { req.headers.forEach { (k, v) -> put(k, v) } }
-                )
-                put("hasBody", hasBody)
-            }
-        )
-
-        if (bodyBytes != null && bodyBytes.isNotEmpty()) {
-            sendFlowControlled(streamId, bodyBytes, RecordFramer.KIND_BINARY)
+        var requestFullySent = false
+        try {
             sendControlJson(
                 buildJsonObject {
-                    put("type", "stream_end")
+                    put("type", "http_request")
                     put("streamId", streamId)
+                    put("method", req.method)
+                    put("path", req.path)
+                    put(
+                        "headers",
+                        buildJsonObject { req.headers.forEach { (k, v) -> put(k, v) } }
+                    )
+                    put("hasBody", hasBody)
                 }
             )
-        }
 
-        return deferred.await()
+            if (bodyBytes != null && bodyBytes.isNotEmpty()) {
+                sendFlowControlled(streamId, bodyBytes, RecordFramer.KIND_BINARY)
+                sendControlJson(
+                    buildJsonObject {
+                        put("type", "stream_end")
+                        put("streamId", streamId)
+                    }
+                )
+            }
+            requestFullySent = true
+            return deferred.await()
+        } catch (err: Throwable) {
+            val removed = synchronized(stateLock) {
+                val p = pendingHttp.remove(streamId)
+                releaseStreamLocked(streamId)
+                p != null
+            }
+            if (removed && !requestFullySent && !closed) {
+                sendControlJsonBestEffort(
+                    buildJsonObject {
+                        put("type", "stream_reset")
+                        put("streamId", streamId)
+                        put("error", "request_cancelled")
+                    }
+                )
+            }
+            throw err
+        }
     }
 
     suspend fun openStream(req: VirtualStreamRequest): DuplexRelayStream {
@@ -278,24 +331,108 @@ class RelayMux(
         val state = ActiveStreamState()
         synchronized(stateLock) {
             if (closed) throw NoiseRelayException("mux_closed", "RelayMux is closed")
-            creditForLocked(streamId)
+            ensureCreditLocked(streamId)
             streams[streamId] = state
         }
 
-        sendControlJson(
-            buildJsonObject {
-                put("type", "stream_open")
-                put("streamId", streamId)
-                put("target", req.target.wireName)
-                put("path", req.path)
-                if (req.headers.isNotEmpty()) {
-                    put("headers", buildJsonObject { req.headers.forEach { (k, v) -> put(k, v) } })
+        try {
+            sendControlJson(
+                buildJsonObject {
+                    put("type", "stream_open")
+                    put("streamId", streamId)
+                    put("target", req.target.wireName)
+                    put("path", req.path)
+                    if (req.headers.isNotEmpty()) {
+                        put("headers", buildJsonObject { req.headers.forEach { (k, v) -> put(k, v) } })
+                    }
+                }
+            )
+            state.opened.await()
+            return buildStreamHandle(streamId, state)
+        } catch (err: Throwable) {
+            val wasRegistered = synchronized(stateLock) {
+                val existing = streams[streamId]
+                if (existing != null) {
+                    existing.closed = true
+                    existing.closeOutcome = StreamCloseOutcome.LocalClose
+                    releaseStreamLocked(streamId)
+                    true
+                } else {
+                    false
                 }
             }
-        )
+            if (wasRegistered && !closed) {
+                sendControlJsonBestEffort(
+                    buildJsonObject {
+                        put("type", "stream_reset")
+                        put("streamId", streamId)
+                        put("error", "open_cancelled")
+                    }
+                )
+            }
+            throw err
+        }
+    }
 
-        state.opened.await()
-        return buildStreamHandle(streamId, state)
+    /**
+     * Single-owner FIFO drain loop for [streamId] outside [stateLock]:
+     * guarantees buffered chunks arrive strictly before subsequent live chunks, and in automatic
+     * window mode returns `window_update` credits only once a listener actually drains data.
+     */
+    private fun drainStreamQueue(streamId: Long, state: ActiveStreamState) {
+        synchronized(stateLock) {
+            if (state.draining || state.dataListeners.isEmpty() || state.deliveryQueue.isEmpty()) {
+                return
+            }
+            state.draining = true
+        }
+
+        var replenishedBytes = 0
+        var releaseAfterDrain = false
+        try {
+            while (true) {
+                val nextItem: Pair<ByteArray, Boolean>?
+                val listenersSnapshot: List<(ByteArray, Boolean) -> Unit>
+                synchronized(stateLock) {
+                    if (state.dataListeners.isEmpty() || state.deliveryQueue.isEmpty()) {
+                        state.draining = false
+                        if (state.closed && state.deliveryQueue.isEmpty()) {
+                            releaseAfterDrain = true
+                        }
+                        nextItem = null
+                        listenersSnapshot = emptyList()
+                    } else {
+                        nextItem = state.deliveryQueue.removeFirst()
+                        listenersSnapshot = state.dataListeners.toList()
+                    }
+                }
+                if (nextItem == null) break
+                val (chunk, binary) = nextItem
+                for (fn in listenersSnapshot) {
+                    runCatching { fn(chunk, binary) }
+                }
+                if (autoReplenishStreamWindow && chunk.isNotEmpty()) {
+                    replenishedBytes += chunk.size
+                }
+            }
+        } finally {
+            synchronized(stateLock) {
+                state.draining = false
+                if (releaseAfterDrain) {
+                    releaseStreamLocked(streamId)
+                }
+            }
+        }
+
+        if (replenishedBytes > 0 && !closed) {
+            sendControlJsonBestEffort(
+                buildJsonObject {
+                    put("type", "window_update")
+                    put("streamId", streamId)
+                    put("deltaBytes", replenishedBytes)
+                }
+            )
+        }
     }
 
     private fun buildStreamHandle(streamId: Long, state: ActiveStreamState): DuplexRelayStream =
@@ -312,7 +449,7 @@ class RelayMux(
 
             override fun acknowledgeRead(bytes: Int) {
                 if (bytes <= 0 || closed) return
-                sendControlJson(
+                sendControlJsonBestEffort(
                     buildJsonObject {
                         put("type", "window_update")
                         put("streamId", streamId)
@@ -330,33 +467,20 @@ class RelayMux(
                     releaseStreamLocked(streamId)
                     listeners = state.closeListeners.toList()
                 }
-                sendControlJson(
+                sendControlJsonBestEffort(
                     buildJsonObject {
                         put("type", "stream_end")
                         put("streamId", streamId)
                     }
                 )
-                listeners.forEach { it(StreamCloseOutcome.LocalClose) }
+                listeners.forEach { runCatching { it(StreamCloseOutcome.LocalClose) } }
             }
 
             override fun onData(listener: (chunk: ByteArray, binary: Boolean) -> Unit) {
-                val buffered = mutableListOf<Pair<ByteArray, Boolean>>()
-                var shouldReleaseNow = false
                 synchronized(stateLock) {
                     state.dataListeners.add(listener)
-                    while (state.earlyChunks.isNotEmpty()) {
-                        buffered.add(state.earlyChunks.removeFirst())
-                    }
-                    if (state.closed && state.earlyChunks.isEmpty()) {
-                        shouldReleaseNow = true
-                    }
                 }
-                for ((chunk, binary) in buffered) {
-                    listener(chunk, binary)
-                }
-                if (shouldReleaseNow) {
-                    synchronized(stateLock) { releaseStreamLocked(streamId) }
-                }
+                drainStreamQueue(streamId, state)
             }
 
             override fun onClose(listener: (StreamCloseOutcome) -> Unit) {
@@ -369,7 +493,7 @@ class RelayMux(
                     }
                 }
                 if (alreadyClosedOutcome != null) {
-                    listener(alreadyClosedOutcome)
+                    runCatching { listener(alreadyClosedOutcome) }
                 }
             }
         }
@@ -392,36 +516,34 @@ class RelayMux(
         }
 
         val payloadLen = record.payload.size
-        var replenishHttpOrAutoStream = false
-        var dataTargets: List<(ByteArray, Boolean) -> Unit> = emptyList()
+        var replenishHttpWindow = false
+        var streamToDrain: ActiveStreamState? = null
         val isBinary = record.kind == RecordFramer.KIND_BINARY
 
         synchronized(stateLock) {
             val inReq = inboundHttp[record.streamId]
             if (inReq != null) {
                 inReq.bodyBuffer.write(record.payload)
-                replenishHttpOrAutoStream = payloadLen > 0
+                replenishHttpWindow = payloadLen > 0
                 return@synchronized
             }
             val pending = pendingHttp[record.streamId]
             if (pending != null) {
                 pending.bodyBuffer.write(record.payload)
-                replenishHttpOrAutoStream = payloadLen > 0
+                replenishHttpWindow = payloadLen > 0
                 return@synchronized
             }
             val stream = streams[record.streamId]
             if (stream != null && !stream.closed) {
-                replenishHttpOrAutoStream = payloadLen > 0 && autoReplenishStreamWindow
-                if (stream.dataListeners.isEmpty()) {
-                    stream.earlyChunks.addLast(record.payload to isBinary)
-                } else {
-                    dataTargets = stream.dataListeners.toList()
+                stream.deliveryQueue.addLast(record.payload to isBinary)
+                if (stream.dataListeners.isNotEmpty()) {
+                    streamToDrain = stream
                 }
             }
         }
 
-        if (replenishHttpOrAutoStream) {
-            sendControlJson(
+        if (replenishHttpWindow) {
+            sendControlJsonBestEffort(
                 buildJsonObject {
                     put("type", "window_update")
                     put("streamId", record.streamId)
@@ -430,8 +552,8 @@ class RelayMux(
             )
         }
 
-        for (fn in dataTargets) {
-            fn(record.payload, isBinary)
+        if (streamToDrain != null) {
+            drainStreamQueue(record.streamId, streamToDrain!!)
         }
     }
 
@@ -451,7 +573,8 @@ class RelayMux(
                 if (delta <= 0) return
                 val toWake = mutableListOf<CompletableDeferred<Unit>>()
                 synchronized(stateLock) {
-                    val credit = creditForLocked(streamId)
+                    val credit = credits[streamId] ?: return
+                    if (credit.closed) return
                     credit.available += delta
                     while (credit.waiters.isNotEmpty()) {
                         toWake.add(credit.waiters.removeFirst())
@@ -473,7 +596,7 @@ class RelayMux(
                 val path = obj["path"]?.jsonPrimitive?.contentOrNull ?: return
                 val headers = decodeStringMap(obj["headers"] as? JsonObject)
                 val hasBody = obj["hasBody"]?.jsonPrimitive?.booleanOrNull ?: false
-                synchronized(stateLock) { creditForLocked(streamId) }
+                synchronized(stateLock) { ensureCreditLocked(streamId) }
                 if (!hasBody) {
                     scope.launch {
                         dispatchHostHttpRequest(streamId, VirtualHttpRequest(method, path, headers, null))
@@ -512,13 +635,13 @@ class RelayMux(
                 val headers = decodeStringMap(obj["headers"] as? JsonObject)
                 val state = ActiveStreamState().apply { opened.complete(Unit) }
                 synchronized(stateLock) {
-                    creditForLocked(streamId)
+                    ensureCreditLocked(streamId)
                     streams[streamId] = state
                 }
                 val h = handlers
                 if (h == null) {
                     synchronized(stateLock) { releaseStreamLocked(streamId) }
-                    sendControlJson(
+                    sendControlJsonBestEffort(
                         buildJsonObject {
                             put("type", "stream_reset")
                             put("streamId", streamId)
@@ -528,12 +651,16 @@ class RelayMux(
                     return
                 }
                 val handle = buildStreamHandle(streamId, state)
-                sendControlJson(
-                    buildJsonObject {
-                        put("type", "stream_opened")
-                        put("streamId", streamId)
-                    }
-                )
+                try {
+                    sendControlJson(
+                        buildJsonObject {
+                            put("type", "stream_opened")
+                            put("streamId", streamId)
+                        }
+                    )
+                } catch (_: Throwable) {
+                    return
+                }
                 scope.launch {
                     try {
                         h.onOpenStream(
@@ -542,13 +669,15 @@ class RelayMux(
                             deviceId
                         )
                     } catch (err: Throwable) {
-                        sendControlJson(
-                            buildJsonObject {
-                                put("type", "stream_reset")
-                                put("streamId", streamId)
-                                put("error", err.message ?: "stream_error")
-                            }
-                        )
+                        if (!closed) {
+                            sendControlJsonBestEffort(
+                                buildJsonObject {
+                                    put("type", "stream_reset")
+                                    put("streamId", streamId)
+                                    put("error", err.message ?: "stream_error")
+                                }
+                            )
+                        }
                     }
                 }
             }
@@ -590,7 +719,7 @@ class RelayMux(
                     if (stream != null && !stream.closed) {
                         stream.closed = true
                         stream.closeOutcome = StreamCloseOutcome.AuthenticatedEnd
-                        if (stream.earlyChunks.isEmpty()) {
+                        if (stream.deliveryQueue.isEmpty() && !stream.draining) {
                             releaseStreamLocked(streamId)
                         }
                         streamListeners = stream.closeListeners.toList()
@@ -601,7 +730,7 @@ class RelayMux(
                     scope.launch { dispatchHostHttpRequest(streamId, req) }
                 }
                 finishedHttp?.let { (call, res) -> call.deferred.complete(res) }
-                streamListeners.forEach { it(StreamCloseOutcome.AuthenticatedEnd) }
+                streamListeners.forEach { runCatching { it(StreamCloseOutcome.AuthenticatedEnd) } }
             }
 
             "stream_reset" -> {
@@ -625,7 +754,7 @@ class RelayMux(
 
                 failedHttp?.deferred?.completeExceptionally(err)
                 failedStream?.opened?.completeExceptionally(err)
-                listeners.forEach { it(StreamCloseOutcome.PeerReset(errMsg)) }
+                listeners.forEach { runCatching { it(StreamCloseOutcome.PeerReset(errMsg)) } }
             }
         }
     }
@@ -633,7 +762,7 @@ class RelayMux(
     private suspend fun dispatchHostHttpRequest(streamId: Long, req: VirtualHttpRequest) {
         val h = handlers
         if (h == null) {
-            sendControlJson(
+            sendControlJsonBestEffort(
                 buildJsonObject {
                     put("type", "http_response")
                     put("streamId", streamId)
@@ -668,13 +797,15 @@ class RelayMux(
             }
             synchronized(stateLock) { releaseStreamLocked(streamId) }
         } catch (err: Throwable) {
-            sendControlJson(
-                buildJsonObject {
-                    put("type", "stream_reset")
-                    put("streamId", streamId)
-                    put("error", err.message ?: "handler_error")
-                }
-            )
+            if (!closed) {
+                sendControlJsonBestEffort(
+                    buildJsonObject {
+                        put("type", "stream_reset")
+                        put("streamId", streamId)
+                        put("error", err.message ?: "handler_error")
+                    }
+                )
+            }
             synchronized(stateLock) { releaseStreamLocked(streamId) }
         }
     }
@@ -692,9 +823,8 @@ class RelayMux(
     }
 
     /**
-     * Closes the multiplexer. When invoked because the underlying socket closed unexpectedly
-     * ([authenticated] = false), any still-open HTTP call or stream that has NOT received an
-     * authenticated `stream_end` frame is rejected as truncated (`docs/110 §3.2`).
+     * Closes the multiplexer. Settles all internal deferreds/waiters and cancels [scope] BEFORE
+     * invoking user close callbacks, isolating each callback so one exception cannot skip cleanup.
      */
     fun close(reason: Throwable? = null, authenticated: Boolean = false) {
         val pendingCalls: List<PendingHttpCall>
@@ -738,14 +868,22 @@ class RelayMux(
                 reason
             )
         }
+
+        // 1. Settle all internal futures/waiters and cancel scope FIRST
         pendingCalls.forEach { it.deferred.completeExceptionally(err) }
-        for ((st, listeners) in openStreams) {
+        for ((st, _) in openStreams) {
             st.opened.completeExceptionally(err)
-            val outcome = st.closeOutcome!!
-            listeners.forEach { it(outcome) }
         }
         creditWaiters.forEach { it.complete(Unit) }
         scope.cancel()
+
+        // 2. Notify user listeners independently outside locks
+        for ((st, listeners) in openStreams) {
+            val outcome = st.closeOutcome!!
+            for (fn in listeners) {
+                runCatching { fn(outcome) }
+            }
+        }
     }
 
     private fun closeWithTransportError(err: Throwable) {
