@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "LumenBox Client API",
-    "version": "1.3.0",
+    "version": "1.4.0",
     "description": "Stable /api/v1 client contract (docs/106 §4, docs/110) shared across HTTPS and multiplexed Noise_IK transports."
   },
   "paths": {
@@ -391,6 +391,42 @@
           }
         }
       }
+    },
+    "/api/v1/devices/self/push": {
+      "put": {
+        "operationId": "upsertSelfDevicePush",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/GeneratedDevicePushConfigRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Device wake-only push capability and preferences recorded",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GeneratedActionAck" }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteSelfDevicePush",
+        "responses": {
+          "200": {
+            "description": "Device wake-only push capability removed",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GeneratedActionAck" }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -519,7 +555,10 @@
           "kind": { "type": "string" },
           "title": { "type": "string" },
           "body": { "type": "string" },
-          "createdAt": { "type": "string" }
+          "createdAt": { "type": "string" },
+          "inboxId": { "type": "string" },
+          "conversationId": { "type": "string" },
+          "workId": { "type": "string" }
         }
       },
       "GeneratedConversationSummary": {
@@ -802,6 +841,36 @@
           "path": { "type": "string" },
           "wsUrl": { "type": "string" },
           "expiresInSeconds": { "type": "integer" }
+        }
+      },
+      "GeneratedQuietHoursWindow": {
+        "type": "object",
+        "required": ["startLocalTime", "endLocalTime", "timezone"],
+        "properties": {
+          "startLocalTime": { "type": "string" },
+          "endLocalTime": { "type": "string" },
+          "timezone": { "type": "string" }
+        }
+      },
+      "GeneratedDevicePushPreferences": {
+        "type": "object",
+        "required": ["level"],
+        "properties": {
+          "level": {
+            "type": "string",
+            "enum": ["needs-you-only", "needs-you-and-completions", "off"]
+          },
+          "quietHours": { "$ref": "#/components/schemas/GeneratedQuietHoursWindow" }
+        }
+      },
+      "GeneratedDevicePushConfigRequest": {
+        "type": "object",
+        "required": ["pushToken", "connId", "preferences"],
+        "properties": {
+          "pushToken": { "type": "string" },
+          "connId": { "type": "string" },
+          "channel": { "type": "string" },
+          "preferences": { "$ref": "#/components/schemas/GeneratedDevicePushPreferences" }
         }
       }
     }

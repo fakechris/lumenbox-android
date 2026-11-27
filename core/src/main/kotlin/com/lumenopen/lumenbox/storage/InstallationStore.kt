@@ -200,6 +200,37 @@ class InstallationStore(
     fun readRefreshToken(connectionId: String): String? =
         vault.read("conn.$connectionId", "refreshToken")?.toString(StandardCharsets.UTF_8)
 
+    fun getOrCreatePushInstallationDeviceId(): String = synchronized(lock) {
+        val existing = vault.read("push.gateway", "deviceId")?.toString(StandardCharsets.UTF_8)
+        if (!existing.isNullOrBlank()) return@synchronized existing
+        val generated = "and_" + java.util.UUID.randomUUID().toString().replace("-", "")
+        vault.write("push.gateway", "deviceId", generated.toByteArray(StandardCharsets.UTF_8))
+        generated
+    }
+
+    fun saveCachedPushCapabilityToken(capabilityToken: String, channelWireName: String) {
+        vault.write("push.gateway", "capabilityToken", capabilityToken.toByteArray(StandardCharsets.UTF_8))
+        vault.write("push.gateway", "channel", channelWireName.toByteArray(StandardCharsets.UTF_8))
+    }
+
+    fun readCachedPushCapabilityToken(): String? =
+        vault.read("push.gateway", "capabilityToken")?.toString(StandardCharsets.UTF_8)
+
+    fun readCachedPushChannel(): String? =
+        vault.read("push.gateway", "channel")?.toString(StandardCharsets.UTF_8)
+
+    fun clearCachedPushCapabilityToken() {
+        vault.deleteNamespace("push.gateway")
+    }
+
+    fun updateLockScreenRedaction(connectionId: String, redact: Boolean) {
+        synchronized(lock) {
+            val existing = connections[connectionId] ?: return
+            connections[connectionId] = existing.copy(redactLockScreenNotifications = redact)
+            persistRegistryLocked()
+        }
+    }
+
     fun topLevelNeedsYouProjection(): List<NeedsYouProjection> =
         synchronized(lock) { buildProjectionsLocked() }
 

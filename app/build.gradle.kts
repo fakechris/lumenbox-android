@@ -12,6 +12,11 @@ kotlin {
     }
 }
 
+val releaseKeystorePath = System.getenv("LUMENBOX_RELEASE_STORE_FILE")?.trim()?.takeIf { it.isNotEmpty() }
+val releaseStorePassword = System.getenv("LUMENBOX_RELEASE_STORE_PASSWORD")?.trim()
+val releaseKeyAlias = System.getenv("LUMENBOX_RELEASE_KEY_ALIAS")?.trim()
+val releaseKeyPassword = System.getenv("LUMENBOX_RELEASE_KEY_PASSWORD")?.trim()
+
 android {
     namespace = "com.lumenopen.lumenbox.app"
     compileSdk = 35
@@ -22,6 +27,35 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
+    }
+
+    signingConfigs {
+        if (releaseKeystorePath != null &&
+            !releaseStorePassword.isNullOrEmpty() &&
+            !releaseKeyAlias.isNullOrEmpty() &&
+            !releaseKeyPassword.isNullOrEmpty()
+        ) {
+            create("releaseExternal") {
+                storeFile = file(releaseKeystorePath)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
+            signingConfigs.findByName("releaseExternal")?.let {
+                signingConfig = it
+            }
+        }
     }
 
     compileOptions {

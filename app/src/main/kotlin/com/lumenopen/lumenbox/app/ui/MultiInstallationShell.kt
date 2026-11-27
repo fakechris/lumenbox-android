@@ -45,6 +45,9 @@ import com.lumenopen.lumenbox.conversation.LiveSseConnector
 import com.lumenopen.lumenbox.desktop.DesktopBinaryStreamOpener
 import com.lumenopen.lumenbox.desktop.ReadOnlyDesktopSessionCoordinator
 import com.lumenopen.lumenbox.inbox.NeedsYouInboxCoordinator
+import com.lumenopen.lumenbox.push.DevicePushSyncCoordinator
+import com.lumenopen.lumenbox.push.LumenBoxDeepLinkRouter
+import com.lumenopen.lumenbox.push.OpenDeepLinkTarget
 import com.lumenopen.lumenbox.inbox.StepUpChallengeAuthenticator
 import com.lumenopen.lumenbox.relay.NoiseRelayException
 import com.lumenopen.lumenbox.relay.TransportPathMode
@@ -75,11 +78,14 @@ fun MultiInstallationShell(
     store: InstallationStore,
     personalCoordinator: PersonalMacSessionCoordinator,
     organisationCoordinator: OrganisationSessionCoordinator,
+    pushSyncCoordinator: DevicePushSyncCoordinator? = null,
     stepUpGateway: StepUpBiometricGateway? = null,
     pendingDeepLinkPairUri: String?,
     onConsumeDeepLinkPairUri: () -> Unit,
     pendingOAuthCallbackUri: String?,
     onConsumeOAuthCallbackUri: () -> Unit,
+    pendingOpenDeepLinkTarget: OpenDeepLinkTarget? = null,
+    onConsumeOpenDeepLinkTarget: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val projections by store.projections.collectAsState()
@@ -94,6 +100,7 @@ fun MultiInstallationShell(
     var pairingError by remember { mutableStateOf<String?>(null) }
     var pairedDevices by remember { mutableStateOf<List<PairedDeviceSummary>>(emptyList()) }
     var globalBannerMessage by remember { mutableStateOf<String?>(null) }
+    var routedOpenTarget by remember { mutableStateOf<OpenDeepLinkTarget?>(null) }
 
     val biometricAuthenticator: StepUpChallengeAuthenticator? = remember(stepUpGateway, context) {
         stepUpGateway?.let { gw ->
@@ -139,6 +146,19 @@ fun MultiInstallationShell(
                     activeModal = ActiveModal.NONE
                 }
             }
+        }
+    }
+
+    LaunchedEffect(pendingOpenDeepLinkTarget, projections) {
+        val openTarget = pendingOpenDeepLinkTarget ?: return@LaunchedEffect
+        onConsumeOpenDeepLinkTarget()
+        activeModal = ActiveModal.NONE
+        val matched = LumenBoxDeepLinkRouter.resolveTargetConnection(store, openTarget)
+        if (matched != null) {
+            store.selectActiveInstallation(matched.id)
+            routedOpenTarget = openTarget
+        } else {
+            globalBannerMessage = "收到钉钉/飞书卡片深链，但本机尚未登录对应服务器连接。"
         }
     }
 
@@ -319,10 +339,14 @@ fun MultiInstallationShell(
                             }
                             PersonalMacInstallationPane(
                                 installationId = selectedProjection.installationId,
+                                store = store,
                                 state = personalState,
                                 inboxCoordinator = inboxCoordinator,
                                 conversationCoordinator = conversationCoordinator,
                                 desktopCoordinator = desktopCoordinator,
+                                pushSyncCoordinator = pushSyncCoordinator,
+                                routedOpenTarget = routedOpenTarget,
+                                onConsumeRoutedOpenTarget = { routedOpenTarget = null },
                                 pendingOfflineActions = personalCoordinator.pendingOfflineActionCount(),
                                 pairedDevices = pairedDevices,
                                 onReconnect = {
@@ -385,10 +409,14 @@ fun MultiInstallationShell(
                             }
                             OrganisationInstallationPane(
                                 projection = selectedProjection,
+                                store = store,
                                 coordinator = organisationCoordinator,
                                 inboxCoordinator = inboxCoordinator,
                                 conversationCoordinator = conversationCoordinator,
                                 desktopCoordinator = desktopCoordinator,
+                                pushSyncCoordinator = pushSyncCoordinator,
+                                routedOpenTarget = routedOpenTarget,
+                                onConsumeRoutedOpenTarget = { routedOpenTarget = null },
                                 onAccessRemoved = { orgName ->
                                     globalBannerMessage = "你在「$orgName」的访问权限已变更或设备已被移除，该组织的本地凭据与离线缓存已自动安全擦除。"
                                 },
@@ -514,15 +542,20 @@ private fun EmptyInstallationsPane(
 @Composable
 private fun OrganisationInstallationPane(
     projection: NeedsYouProjection,
+    store: InstallationStore,
     coordinator: OrganisationSessionCoordinator,
     inboxCoordinator: NeedsYouInboxCoordinator,
     conversationCoordinator: ConversationAndBoardCoordinator,
     desktopCoordinator: ReadOnlyDesktopSessionCoordinator,
+    pushSyncCoordinator: DevicePushSyncCoordinator?,
+    routedOpenTarget: OpenDeepLinkTarget?,
+    onConsumeRoutedOpenTarget: () -> Unit,
     onAccessRemoved: (String) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     val connectionId = projection.installationId
     var activeTab by remember(connectionId) { mutableStateOf(InstallationTab.NEEDS_YOU) }
+    var highlightedInboxId by remember(connectionId) { mutableStateOf<String?>(null) }
     var selectedConversationId by remember(connectionId) { mutableStateOf<String?>(null) }
     var requestedDeliverableId by remember(connectionId) { mutableStateOf<String?>(null) }
     var inboxItems by remember(connectionId) {
@@ -530,6 +563,27 @@ private fun OrganisationInstallationPane(
     }
     var devices by remember(connectionId) { mutableStateOf<List<PairedDeviceSummary>>(emptyList()) }
     var syncError by remember(connectionId) { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(routedOpenTarget, connectionId) {
+        val target = routedOpenTarget ?: return@LaunchedEffect
+        val resolved = LumenBoxDeepLinkRouter.resolveTargetConnection(store, target)
+        if (resolved?.id == connectionId) {
+            when (target.preferredTab) {
+                OpenDeepLinkTarget.FocusTab.NEEDS_YOU -> {
+                    activeTab = InstallationTab.NEEDS_YOU
+                    highlightedInboxId = target.inboxId
+                }
+                OpenDeepLinkTarget.FocusTab.CONVERSATIONS -> {
+                    activeTab = InstallationTab.CONVERSATIONS
+                    selectedConversationId = target.conversationId
+                }
+                OpenDeepLinkTarget.FocusTab.BOARD_DELIVERABLES -> {
+                    activeTab = InstallationTab.BOARD_DELIVERABLES
+                }
+            }
+            onConsumeRoutedOpenTarget()
+        }
+    }
 
     suspend fun refreshAll() {
         syncError = null
@@ -539,6 +593,7 @@ private fun OrganisationInstallationPane(
             conversationCoordinator.syncDurableChanges()
             inboxItems = inboxCoordinator.refreshInbox()
             devices = coordinator.listDevices(connectionId)
+            runCatching { pushSyncCoordinator?.syncConnectionPush(connectionId) }
         } catch (err: ApiEnvelopeException) {
             if (err.envelope.isAccessRemoved) {
                 onAccessRemoved(projection.displayName)
@@ -624,6 +679,8 @@ private fun OrganisationInstallationPane(
                     items = inboxItems,
                     isOnline = true,
                     coordinator = inboxCoordinator,
+                    highlightedInboxId = highlightedInboxId,
+                    onClearHighlightedInboxId = { highlightedInboxId = null },
                     onItemsChanged = { inboxItems = it },
                     onAccessRemoved = { onAccessRemoved(projection.displayName) },
                 )
@@ -669,6 +726,12 @@ private fun OrganisationInstallationPane(
             }
 
             InstallationTab.DEVICES -> {
+                PushPreferencesSectionCard(
+                    connectionId = connectionId,
+                    isOnline = true,
+                    store = store,
+                    pushSyncCoordinator = pushSyncCoordinator,
+                )
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(
                         modifier = Modifier.padding(16.dp),
@@ -733,10 +796,14 @@ private fun OrganisationInstallationPane(
 @Composable
 private fun PersonalMacInstallationPane(
     installationId: String,
+    store: InstallationStore,
     state: PersonalMacSessionState,
     inboxCoordinator: NeedsYouInboxCoordinator,
     conversationCoordinator: ConversationAndBoardCoordinator,
     desktopCoordinator: ReadOnlyDesktopSessionCoordinator,
+    pushSyncCoordinator: DevicePushSyncCoordinator?,
+    routedOpenTarget: OpenDeepLinkTarget?,
+    onConsumeRoutedOpenTarget: () -> Unit,
     pendingOfflineActions: Int,
     pairedDevices: List<PairedDeviceSummary>,
     onReconnect: () -> Unit,
@@ -745,12 +812,34 @@ private fun PersonalMacInstallationPane(
     onUnpairMac: () -> Unit,
 ) {
     var activeTab by remember(installationId) { mutableStateOf(InstallationTab.NEEDS_YOU) }
+    var highlightedInboxId by remember(installationId) { mutableStateOf<String?>(null) }
     var selectedConversationId by remember(installationId) { mutableStateOf<String?>(null) }
     var requestedDeliverableId by remember(installationId) { mutableStateOf<String?>(null) }
     var inboxItems by remember(state) {
         mutableStateOf(inboxCoordinator.readCachedItems())
     }
     val isOnline = state is PersonalMacSessionState.Online
+
+    LaunchedEffect(routedOpenTarget, installationId) {
+        val target = routedOpenTarget ?: return@LaunchedEffect
+        val resolved = LumenBoxDeepLinkRouter.resolveTargetConnection(store, target)
+        if (resolved?.id == installationId) {
+            when (target.preferredTab) {
+                OpenDeepLinkTarget.FocusTab.NEEDS_YOU -> {
+                    activeTab = InstallationTab.NEEDS_YOU
+                    highlightedInboxId = target.inboxId
+                }
+                OpenDeepLinkTarget.FocusTab.CONVERSATIONS -> {
+                    activeTab = InstallationTab.CONVERSATIONS
+                    selectedConversationId = target.conversationId
+                }
+                OpenDeepLinkTarget.FocusTab.BOARD_DELIVERABLES -> {
+                    activeTab = InstallationTab.BOARD_DELIVERABLES
+                }
+            }
+            onConsumeRoutedOpenTarget()
+        }
+    }
 
     LaunchedEffect(isOnline) {
         if (isOnline) {
@@ -759,6 +848,7 @@ private fun PersonalMacInstallationPane(
                 conversationCoordinator.flushPendingConversationsQueue()
                 conversationCoordinator.syncDurableChanges()
                 inboxItems = inboxCoordinator.refreshInbox()
+                pushSyncCoordinator?.syncConnectionPush(installationId)
             }
             runCatching {
                 conversationCoordinator.collectGlobalEventsStream {
@@ -859,6 +949,8 @@ private fun PersonalMacInstallationPane(
                     isOnline = isOnline,
                     pendingOfflineActions = pendingOfflineActions,
                     coordinator = inboxCoordinator,
+                    highlightedInboxId = highlightedInboxId,
+                    onClearHighlightedInboxId = { highlightedInboxId = null },
                     onItemsChanged = { inboxItems = it },
                 )
             }
@@ -900,6 +992,12 @@ private fun PersonalMacInstallationPane(
             }
 
             InstallationTab.DEVICES -> {
+                PushPreferencesSectionCard(
+                    connectionId = installationId,
+                    isOnline = isOnline,
+                    store = store,
+                    pushSyncCoordinator = pushSyncCoordinator,
+                )
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(
                         modifier = Modifier.padding(16.dp),
