@@ -40,7 +40,8 @@ import androidx.compose.ui.unit.dp
 import com.lumenopen.lumenbox.app.security.StepUpBiometricGateway
 import com.lumenopen.lumenbox.auth.OAuthExchangeOutcome
 import com.lumenopen.lumenbox.contract.ApiEnvelopeException
-import com.lumenopen.lumenbox.contract.InboxDecisionItem
+import com.lumenopen.lumenbox.conversation.ConversationAndBoardCoordinator
+import com.lumenopen.lumenbox.conversation.LiveSseConnector
 import com.lumenopen.lumenbox.inbox.NeedsYouInboxCoordinator
 import com.lumenopen.lumenbox.inbox.StepUpChallengeAuthenticator
 import com.lumenopen.lumenbox.relay.NoiseRelayException
@@ -57,6 +58,13 @@ import com.lumenopen.lumenbox.storage.PersonalInstallationAlreadyExistsException
 import kotlinx.coroutines.launch
 
 private enum class ActiveModal { NONE, PAIR_PERSONAL_MAC, ADD_ORGANISATION }
+
+enum class InstallationTab(val label: String) {
+    NEEDS_YOU("待决 Needs you"),
+    CONVERSATIONS("流式对话"),
+    BOARD_DELIVERABLES("看板与交付物"),
+    DEVICES("设备与连接"),
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -280,9 +288,23 @@ fun MultiInstallationShell(
                                     stepUpAuthenticator = biometricAuthenticator,
                                 )
                             }
+                            val conversationCoordinator = remember(selectedProjection.installationId) {
+                                ConversationAndBoardCoordinator(
+                                    connectionId = selectedProjection.installationId,
+                                    store = store,
+                                    transportProvider = { personalCoordinator.activeApiTransport() },
+                                    sseConnectorProvider = {
+                                        personalCoordinator.activeRelayMux()?.let {
+                                            LiveSseConnector.overRelayMux { personalCoordinator.activeRelayMux() }
+                                        }
+                                    },
+                                )
+                            }
                             PersonalMacInstallationPane(
+                                installationId = selectedProjection.installationId,
                                 state = personalState,
                                 inboxCoordinator = inboxCoordinator,
+                                conversationCoordinator = conversationCoordinator,
                                 pendingOfflineActions = personalCoordinator.pendingOfflineActionCount(),
                                 pairedDevices = pairedDevices,
                                 onReconnect = {
@@ -319,10 +341,23 @@ fun MultiInstallationShell(
                                     stepUpAuthenticator = biometricAuthenticator,
                                 )
                             }
+                            val conversationCoordinator = remember(selectedProjection.installationId) {
+                                ConversationAndBoardCoordinator(
+                                    connectionId = selectedProjection.installationId,
+                                    store = store,
+                                    transportProvider = {
+                                        organisationCoordinator.transportForOrganisation(selectedProjection.installationId)
+                                    },
+                                    sseConnectorProvider = {
+                                        organisationCoordinator.sseConnectorForOrganisation(selectedProjection.installationId)
+                                    },
+                                )
+                            }
                             OrganisationInstallationPane(
                                 projection = selectedProjection,
                                 coordinator = organisationCoordinator,
                                 inboxCoordinator = inboxCoordinator,
+                                conversationCoordinator = conversationCoordinator,
                                 onAccessRemoved = { orgName ->
                                     globalBannerMessage = "你在「$orgName」的访问权限已变更或设备已被移除，该组织的本地凭据与离线缓存已自动安全擦除。"
                                 },
@@ -383,6 +418,35 @@ fun TopLevelInstallationSwitcherBar(
 }
 
 @Composable
+private fun InstallationSubNavigationRow(
+    selectedTab: InstallationTab,
+    needsYouCount: Int,
+    onSelectTab: (InstallationTab) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        for (tab in InstallationTab.entries) {
+            FilterChip(
+                selected = selectedTab == tab,
+                onClick = { onSelectTab(tab) },
+                label = {
+                    if (tab == InstallationTab.NEEDS_YOU && needsYouCount > 0) {
+                        Text("${tab.label} ($needsYouCount)")
+                    } else {
+                        Text(tab.label)
+                    }
+                },
+            )
+        }
+    }
+}
+
+@Composable
 private fun EmptyInstallationsPane(
     onStartPersonalPairing: () -> Unit,
     onStartOrganisationSignIn: () -> Unit,
@@ -421,10 +485,14 @@ private fun OrganisationInstallationPane(
     projection: NeedsYouProjection,
     coordinator: OrganisationSessionCoordinator,
     inboxCoordinator: NeedsYouInboxCoordinator,
+    conversationCoordinator: ConversationAndBoardCoordinator,
     onAccessRemoved: (String) -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     val connectionId = projection.installationId
+    var activeTab by remember(connectionId) { mutableStateOf(InstallationTab.NEEDS_YOU) }
+    var selectedConversationId by remember(connectionId) { mutableStateOf<String?>(null) }
+    var requestedDeliverableId by remember(connectionId) { mutableStateOf<String?>(null) }
     var inboxItems by remember(connectionId) {
         mutableStateOf(inboxCoordinator.readCachedItems())
     }
@@ -435,6 +503,8 @@ private fun OrganisationInstallationPane(
         syncError = null
         try {
             inboxCoordinator.flushPendingDecisions()
+            conversationCoordinator.flushPendingConversationsQueue()
+            conversationCoordinator.syncDurableChanges()
             inboxItems = inboxCoordinator.refreshInbox()
             devices = coordinator.listDevices(connectionId)
         } catch (err: ApiEnvelopeException) {
@@ -450,6 +520,19 @@ private fun OrganisationInstallationPane(
 
     LaunchedEffect(connectionId) {
         refreshAll()
+    }
+
+    // Foreground global durable events stream (`GET /api/v1/events`)
+    LaunchedEffect(connectionId) {
+        runCatching {
+            conversationCoordinator.collectGlobalEventsStream {
+                inboxItems = inboxCoordinator.readCachedItems()
+            }
+        }.onFailure { err ->
+            if (err is ApiEnvelopeException && err.envelope.isAccessRemoved) {
+                onAccessRemoved(projection.displayName)
+            }
+        }
     }
 
     Column(
@@ -473,7 +556,7 @@ private fun OrganisationInstallationPane(
                 Column(modifier = Modifier.weight(1f)) {
                     Text(projection.displayName, style = MaterialTheme.typography.titleMedium)
                     Text(
-                        "HTTPS + 15m 内存令牌 / CrossProcessFileLock 轮换凭据",
+                        "HTTPS + 15m 内存令牌 / /changes 持久增量同步",
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
@@ -482,6 +565,12 @@ private fun OrganisationInstallationPane(
                 }
             }
         }
+
+        InstallationSubNavigationRow(
+            selectedTab = activeTab,
+            needsYouCount = inboxItems.size,
+            onSelectTab = { activeTab = it },
+        )
 
         syncError?.let { msg ->
             Card(
@@ -497,67 +586,103 @@ private fun OrganisationInstallationPane(
             }
         }
 
-        NeedsYouInboxSection(
-            items = inboxItems,
-            isOnline = true,
-            coordinator = inboxCoordinator,
-            onItemsChanged = { inboxItems = it },
-            onAccessRemoved = { onAccessRemoved(projection.displayName) },
-        )
+        when (activeTab) {
+            InstallationTab.NEEDS_YOU -> {
+                NeedsYouInboxSection(
+                    items = inboxItems,
+                    isOnline = true,
+                    coordinator = inboxCoordinator,
+                    onItemsChanged = { inboxItems = it },
+                    onAccessRemoved = { onAccessRemoved(projection.displayName) },
+                )
+            }
 
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Text("我的登录设备 (/api/v1/devices)", style = MaterialTheme.typography.titleMedium)
-                if (devices.isEmpty()) {
-                    Text("暂无已登记设备记录。", style = MaterialTheme.typography.bodySmall)
-                } else {
-                    for (dev in devices) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                val selfTag = if (dev.isCurrentDevice) "（本机）" else ""
-                                Text("${dev.name}$selfTag", style = MaterialTheme.typography.bodyMedium)
-                                Text(
-                                    listOfNotNull(dev.platform, dev.lastSeenAt).joinToString(" · "),
-                                    style = MaterialTheme.typography.bodySmall,
-                                )
-                            }
-                            OutlinedButton(
-                                onClick = {
-                                    scope.launch {
-                                        runCatching {
-                                            if (coordinator.revokeDevice(connectionId, dev.id) && !dev.isCurrentDevice) {
-                                                devices = coordinator.listDevices(connectionId)
-                                            }
-                                        }.onFailure { err ->
-                                            if (err is ApiEnvelopeException && err.envelope.isAccessRemoved) {
-                                                onAccessRemoved(projection.displayName)
-                                            }
-                                        }
+            InstallationTab.CONVERSATIONS -> {
+                ConversationsSection(
+                    connectionId = connectionId,
+                    isOnline = true,
+                    coordinator = conversationCoordinator,
+                    selectedConversationId = selectedConversationId,
+                    onSelectConversationId = { selectedConversationId = it },
+                    onOpenDeliverableId = { delivId ->
+                        requestedDeliverableId = delivId
+                        activeTab = InstallationTab.BOARD_DELIVERABLES
+                    },
+                    onAccessRemoved = { onAccessRemoved(projection.displayName) },
+                )
+            }
+
+            InstallationTab.BOARD_DELIVERABLES -> {
+                WorkBoardAndDeliverablesSection(
+                    connectionId = connectionId,
+                    isOnline = true,
+                    coordinator = conversationCoordinator,
+                    requestedDeliverableId = requestedDeliverableId,
+                    onConsumeRequestedDeliverableId = { requestedDeliverableId = null },
+                    onJumpToConversation = { convId ->
+                        selectedConversationId = convId
+                        activeTab = InstallationTab.CONVERSATIONS
+                    },
+                    onAccessRemoved = { onAccessRemoved(projection.displayName) },
+                )
+            }
+
+            InstallationTab.DEVICES -> {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text("我的登录设备 (/api/v1/devices)", style = MaterialTheme.typography.titleMedium)
+                        if (devices.isEmpty()) {
+                            Text("暂无已登记设备记录。", style = MaterialTheme.typography.bodySmall)
+                        } else {
+                            for (dev in devices) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        val selfTag = if (dev.isCurrentDevice) "（本机）" else ""
+                                        Text("${dev.name}$selfTag", style = MaterialTheme.typography.bodyMedium)
+                                        Text(
+                                            listOfNotNull(dev.platform, dev.lastSeenAt).joinToString(" · "),
+                                            style = MaterialTheme.typography.bodySmall,
+                                        )
                                     }
-                                },
-                            ) {
-                                Text(if (dev.isCurrentDevice) "退出本机" else "吊销")
+                                    OutlinedButton(
+                                        onClick = {
+                                            scope.launch {
+                                                runCatching {
+                                                    if (coordinator.revokeDevice(connectionId, dev.id) && !dev.isCurrentDevice) {
+                                                        devices = coordinator.listDevices(connectionId)
+                                                    }
+                                                }.onFailure { err ->
+                                                    if (err is ApiEnvelopeException && err.envelope.isAccessRemoved) {
+                                                        onAccessRemoved(projection.displayName)
+                                                    }
+                                                }
+                                            }
+                                        },
+                                    ) {
+                                        Text(if (dev.isCurrentDevice) "退出本机" else "吊销")
+                                    }
+                                }
                             }
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        OutlinedButton(
+                            onClick = {
+                                scope.launch {
+                                    coordinator.signOut(connectionId)
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("退出该组织并擦除本地加密缓存")
                         }
                     }
-                }
-                Spacer(modifier = Modifier.height(4.dp))
-                OutlinedButton(
-                    onClick = {
-                        scope.launch {
-                            coordinator.signOut(connectionId)
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text("退出该组织并擦除本地加密缓存")
                 }
             }
         }
@@ -566,8 +691,10 @@ private fun OrganisationInstallationPane(
 
 @Composable
 private fun PersonalMacInstallationPane(
+    installationId: String,
     state: PersonalMacSessionState,
     inboxCoordinator: NeedsYouInboxCoordinator,
+    conversationCoordinator: ConversationAndBoardCoordinator,
     pendingOfflineActions: Int,
     pairedDevices: List<PairedDeviceSummary>,
     onReconnect: () -> Unit,
@@ -575,6 +702,9 @@ private fun PersonalMacInstallationPane(
     onRevokeDevice: (String) -> Unit,
     onUnpairMac: () -> Unit,
 ) {
+    var activeTab by remember(installationId) { mutableStateOf(InstallationTab.NEEDS_YOU) }
+    var selectedConversationId by remember(installationId) { mutableStateOf<String?>(null) }
+    var requestedDeliverableId by remember(installationId) { mutableStateOf<String?>(null) }
     var inboxItems by remember(state) {
         mutableStateOf(inboxCoordinator.readCachedItems())
     }
@@ -584,7 +714,14 @@ private fun PersonalMacInstallationPane(
         if (isOnline) {
             runCatching {
                 inboxCoordinator.flushPendingDecisions()
+                conversationCoordinator.flushPendingConversationsQueue()
+                conversationCoordinator.syncDurableChanges()
                 inboxItems = inboxCoordinator.refreshInbox()
+            }
+            runCatching {
+                conversationCoordinator.collectGlobalEventsStream {
+                    inboxItems = inboxCoordinator.readCachedItems()
+                }
             }
         }
     }
@@ -667,56 +804,96 @@ private fun PersonalMacInstallationPane(
             PersonalMacSessionState.Unpaired -> Unit
         }
 
-        NeedsYouInboxSection(
-            items = inboxItems,
-            isOnline = isOnline,
-            pendingOfflineActions = pendingOfflineActions,
-            coordinator = inboxCoordinator,
-            onItemsChanged = { inboxItems = it },
+        InstallationSubNavigationRow(
+            selectedTab = activeTab,
+            needsYouCount = inboxItems.size,
+            onSelectTab = { activeTab = it },
         )
 
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("已配对设备", style = MaterialTheme.typography.titleMedium)
-                    OutlinedButton(onClick = onRefreshDevices) {
-                        Text("刷新")
-                    }
-                }
-                for (device in pairedDevices) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
+        when (activeTab) {
+            InstallationTab.NEEDS_YOU -> {
+                NeedsYouInboxSection(
+                    items = inboxItems,
+                    isOnline = isOnline,
+                    pendingOfflineActions = pendingOfflineActions,
+                    coordinator = inboxCoordinator,
+                    onItemsChanged = { inboxItems = it },
+                )
+            }
+
+            InstallationTab.CONVERSATIONS -> {
+                ConversationsSection(
+                    connectionId = installationId,
+                    isOnline = isOnline,
+                    coordinator = conversationCoordinator,
+                    selectedConversationId = selectedConversationId,
+                    onSelectConversationId = { selectedConversationId = it },
+                    onOpenDeliverableId = { delivId ->
+                        requestedDeliverableId = delivId
+                        activeTab = InstallationTab.BOARD_DELIVERABLES
+                    },
+                )
+            }
+
+            InstallationTab.BOARD_DELIVERABLES -> {
+                WorkBoardAndDeliverablesSection(
+                    connectionId = installationId,
+                    isOnline = isOnline,
+                    coordinator = conversationCoordinator,
+                    requestedDeliverableId = requestedDeliverableId,
+                    onConsumeRequestedDeliverableId = { requestedDeliverableId = null },
+                    onJumpToConversation = { convId ->
+                        selectedConversationId = convId
+                        activeTab = InstallationTab.CONVERSATIONS
+                    },
+                )
+            }
+
+            InstallationTab.DEVICES -> {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            val suffix = if (device.isCurrentDevice) "（本机）" else ""
-                            Text("${device.name}$suffix", style = MaterialTheme.typography.bodyMedium)
-                            Text(
-                                listOfNotNull(device.platform, device.lastSeenAt).joinToString(" · "),
-                                style = MaterialTheme.typography.bodySmall,
-                            )
-                        }
-                        if (!device.isCurrentDevice && isOnline) {
-                            OutlinedButton(onClick = { onRevokeDevice(device.id) }) {
-                                Text("移除")
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text("已配对设备", style = MaterialTheme.typography.titleMedium)
+                            OutlinedButton(onClick = onRefreshDevices) {
+                                Text("刷新")
                             }
                         }
+                        for (device in pairedDevices) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    val suffix = if (device.isCurrentDevice) "（本机）" else ""
+                                    Text("${device.name}$suffix", style = MaterialTheme.typography.bodyMedium)
+                                    Text(
+                                        listOfNotNull(device.platform, device.lastSeenAt).joinToString(" · "),
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
+                                if (!device.isCurrentDevice && isOnline) {
+                                    OutlinedButton(onClick = { onRevokeDevice(device.id) }) {
+                                        Text("移除")
+                                    }
+                                }
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        OutlinedButton(
+                            onClick = onUnpairMac,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("解除本机与该个人 Mac 的配对并擦除本地缓存")
+                        }
                     }
-                }
-                Spacer(modifier = Modifier.height(4.dp))
-                OutlinedButton(
-                    onClick = onUnpairMac,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text("解除本机与该个人 Mac 的配对并擦除本地缓存")
                 }
             }
         }

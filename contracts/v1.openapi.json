@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "LumenBox Client API",
-    "version": "1.1.0",
+    "version": "1.2.0",
     "description": "Stable /api/v1 client contract (docs/106 §4, docs/110) shared across HTTPS and multiplexed Noise_IK transports."
   },
   "paths": {
@@ -151,12 +151,182 @@
     "/api/v1/conversations": {
       "get": {
         "operationId": "listConversations",
+        "parameters": [
+          { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer" } },
+          { "name": "cursor", "in": "query", "required": false, "schema": { "type": "string" } }
+        ],
         "responses": {
           "200": {
             "description": "Paged conversations",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/GeneratedConversationPage" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/conversations/{id}/messages": {
+      "get": {
+        "operationId": "listConversationMessages",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer" } },
+          { "name": "cursor", "in": "query", "required": false, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paged committed messages in a conversation",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GeneratedMessagePage" }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "sendConversationMessage",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/GeneratedSendMessageRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Message accepted idempotently",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GeneratedSendMessageAck" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/conversations/{id}/card-actions": {
+      "post": {
+        "operationId": "submitCardAction",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/GeneratedCardActionRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "ShowUI structured card action accepted",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GeneratedActionAck" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/conversations/{id}/stop": {
+      "post": {
+        "operationId": "stopConversationTurn",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Active turn stop requested",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GeneratedActionAck" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/uploads": {
+      "post": {
+        "operationId": "uploadAttachment",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/octet-stream": {
+              "schema": { "type": "string", "format": "binary" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Uploaded attachment descriptor",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GeneratedUploadDescriptor" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/work": {
+      "get": {
+        "operationId": "listWork",
+        "parameters": [
+          { "name": "state", "in": "query", "required": false, "schema": { "type": "string" } },
+          { "name": "agentId", "in": "query", "required": false, "schema": { "type": "string" } },
+          { "name": "waitsOnMe", "in": "query", "required": false, "schema": { "type": "boolean" } },
+          { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer" } },
+          { "name": "cursor", "in": "query", "required": false, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paged work items",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GeneratedWorkPage" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/board": {
+      "get": {
+        "operationId": "getBoard",
+        "responses": {
+          "200": {
+            "description": "Board columns and ordered cards",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GeneratedBoardProjection" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/deliverables/{id}": {
+      "get": {
+        "operationId": "getDeliverable",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deliverable metadata and short-lived expiring download/preview link",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GeneratedDeliverableLink" }
               }
             }
           }
@@ -322,8 +492,10 @@
           "id": { "type": "string" },
           "title": { "type": "string" },
           "agentId": { "type": "string" },
+          "agentName": { "type": "string" },
           "updatedAt": { "type": "string" },
-          "running": { "type": "boolean" }
+          "running": { "type": "boolean" },
+          "lastMessagePreview": { "type": "string" }
         }
       },
       "GeneratedConversationPage": {
@@ -337,12 +509,245 @@
           "nextCursor": { "type": "string" }
         }
       },
+      "GeneratedAttachmentRef": {
+        "type": "object",
+        "required": ["id", "name", "mimeType"],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "mimeType": { "type": "string" },
+          "kind": { "type": "string" },
+          "sizeBytes": { "type": "integer", "format": "int64" }
+        }
+      },
+      "GeneratedToolCallSummary": {
+        "type": "object",
+        "required": ["id", "name", "status"],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "status": { "type": "string" },
+          "summary": { "type": "string" }
+        }
+      },
+      "GeneratedShowUiActionOption": {
+        "type": "object",
+        "required": ["actionId", "label"],
+        "properties": {
+          "actionId": { "type": "string" },
+          "label": { "type": "string" },
+          "style": { "type": "string" }
+        }
+      },
+      "GeneratedShowUiCard": {
+        "type": "object",
+        "required": ["cardId", "title"],
+        "properties": {
+          "cardId": { "type": "string" },
+          "title": { "type": "string" },
+          "body": { "type": "string" },
+          "actions": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/GeneratedShowUiActionOption" }
+          }
+        }
+      },
+      "GeneratedConversationMessage": {
+        "type": "object",
+        "required": ["id", "conversationId", "role", "text", "createdAt"],
+        "properties": {
+          "id": { "type": "string" },
+          "conversationId": { "type": "string" },
+          "clientMessageId": { "type": "string" },
+          "role": { "type": "string" },
+          "text": { "type": "string" },
+          "thinking": { "type": "string" },
+          "createdAt": { "type": "string" },
+          "attachments": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/GeneratedAttachmentRef" }
+          },
+          "toolCalls": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/GeneratedToolCallSummary" }
+          },
+          "cards": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/GeneratedShowUiCard" }
+          },
+          "deliverableIds": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      },
+      "GeneratedMessagePage": {
+        "type": "object",
+        "required": ["items"],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/GeneratedConversationMessage" }
+          },
+          "nextCursor": { "type": "string" }
+        }
+      },
+      "GeneratedSendMessageRequest": {
+        "type": "object",
+        "required": ["clientMessageId", "text"],
+        "properties": {
+          "clientMessageId": { "type": "string" },
+          "text": { "type": "string" },
+          "attachmentIds": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      },
+      "GeneratedSendMessageAck": {
+        "type": "object",
+        "required": ["ok", "messageId", "clientMessageId"],
+        "properties": {
+          "ok": { "type": "boolean" },
+          "messageId": { "type": "string" },
+          "clientMessageId": { "type": "string" },
+          "durableSeq": { "type": "integer", "format": "int64" }
+        }
+      },
+      "GeneratedCardActionRequest": {
+        "type": "object",
+        "required": ["clientMessageId", "cardId", "actionId"],
+        "properties": {
+          "clientMessageId": { "type": "string" },
+          "cardId": { "type": "string" },
+          "actionId": { "type": "string" },
+          "payload": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          }
+        }
+      },
+      "GeneratedUploadDescriptor": {
+        "type": "object",
+        "required": ["attachmentId", "name", "mimeType", "sizeBytes"],
+        "properties": {
+          "attachmentId": { "type": "string" },
+          "name": { "type": "string" },
+          "mimeType": { "type": "string" },
+          "kind": { "type": "string" },
+          "sizeBytes": { "type": "integer", "format": "int64" },
+          "durableSeq": { "type": "integer", "format": "int64" }
+        }
+      },
+      "GeneratedWorkSummary": {
+        "type": "object",
+        "required": ["id", "title", "state", "updatedAt"],
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "state": { "type": "string" },
+          "agentId": { "type": "string" },
+          "agentName": { "type": "string" },
+          "conversationId": { "type": "string" },
+          "waitsOnMe": { "type": "boolean" },
+          "summary": { "type": "string" },
+          "deliverableIds": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "updatedAt": { "type": "string" }
+        }
+      },
+      "GeneratedWorkPage": {
+        "type": "object",
+        "required": ["items"],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/GeneratedWorkSummary" }
+          },
+          "nextCursor": { "type": "string" }
+        }
+      },
+      "GeneratedBoardColumn": {
+        "type": "object",
+        "required": ["id", "title", "cards"],
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "cards": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/GeneratedWorkSummary" }
+          }
+        }
+      },
+      "GeneratedBoardProjection": {
+        "type": "object",
+        "required": ["columns"],
+        "properties": {
+          "columns": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/GeneratedBoardColumn" }
+          },
+          "updatedAt": { "type": "string" }
+        }
+      },
+      "GeneratedDeliverableSummary": {
+        "type": "object",
+        "required": ["id", "title", "mimeType", "createdAt"],
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "mimeType": { "type": "string" },
+          "sizeBytes": { "type": "integer", "format": "int64" },
+          "workId": { "type": "string" },
+          "conversationId": { "type": "string" },
+          "createdAt": { "type": "string" }
+        }
+      },
+      "GeneratedDeliverableLink": {
+        "type": "object",
+        "required": ["id", "title", "mimeType", "url", "expiresAt"],
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "mimeType": { "type": "string" },
+          "sizeBytes": { "type": "integer", "format": "int64" },
+          "url": { "type": "string" },
+          "expiresAt": { "type": "string" },
+          "inlinePreviewText": { "type": "string" }
+        }
+      },
       "GeneratedChangesResponse": {
         "type": "object",
         "required": ["durableSeq"],
         "properties": {
           "durableSeq": { "type": "integer", "format": "int64" },
-          "hasMore": { "type": "boolean" }
+          "hasMore": { "type": "boolean" },
+          "conversations": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/GeneratedConversationSummary" }
+          },
+          "messages": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/GeneratedConversationMessage" }
+          },
+          "removedConversationIds": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "inbox": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/GeneratedInboxItemWire" }
+          },
+          "work": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/GeneratedWorkSummary" }
+          },
+          "deliverables": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/GeneratedDeliverableSummary" }
+          }
         }
       },
       "GeneratedDesktopTicketRequest": {
