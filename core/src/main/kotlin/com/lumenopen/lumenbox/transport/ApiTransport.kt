@@ -87,7 +87,11 @@ class DirectHttpsTransport(
                         requestMethod = req.method.uppercase()
                         connectTimeout = 10_000
                         readTimeout = 30_000
-                        headers.forEach { (k, v) -> setRequestProperty(k, v) }
+                        useCaches = false
+                        instanceFollowRedirects = false
+                        headers
+                            .filterKeys { !it.equals("cookie", ignoreCase = true) }
+                            .forEach { (k, v) -> setRequestProperty(k, v) }
                         if (req.body != null) {
                             doOutput = true
                             outputStream.use { it.write(req.body) }
