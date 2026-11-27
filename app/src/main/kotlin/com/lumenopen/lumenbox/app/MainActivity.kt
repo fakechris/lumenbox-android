@@ -14,6 +14,10 @@ import com.lumenopen.lumenbox.app.security.StepUpBiometricGateway
 import com.lumenopen.lumenbox.app.ui.MultiInstallationShell
 import com.lumenopen.lumenbox.auth.OrganisationTokenManager
 import com.lumenopen.lumenbox.auth.PkceOAuthClient
+import com.lumenopen.lumenbox.push.DevicePushSyncCoordinator
+import com.lumenopen.lumenbox.push.LumenBoxDeepLinkRouter
+import com.lumenopen.lumenbox.push.OpenDeepLinkTarget
+import com.lumenopen.lumenbox.push.PushGatewayClient
 import com.lumenopen.lumenbox.relay.WebSocketRelayConnector
 import com.lumenopen.lumenbox.session.OrganisationSessionCoordinator
 import com.lumenopen.lumenbox.session.PersonalMacSessionCoordinator
@@ -24,8 +28,10 @@ class MainActivity : ComponentActivity() {
     private lateinit var installationStore: InstallationStore
     private lateinit var personalCoordinator: PersonalMacSessionCoordinator
     private lateinit var organisationCoordinator: OrganisationSessionCoordinator
+    private lateinit var pushSyncCoordinator: DevicePushSyncCoordinator
     private var pendingPairUri by mutableStateOf<String?>(null)
     private var pendingOAuthCallbackUri by mutableStateOf<String?>(null)
+    private var pendingOpenTarget by mutableStateOf<OpenDeepLinkTarget?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -71,6 +77,22 @@ class MainActivity : ComponentActivity() {
             tokenManager = tokenManager,
             stepUpSigner = stepUpSigner,
         )
+        val pushGatewayClient = PushGatewayClient(store = installationStore)
+        pushSyncCoordinator = DevicePushSyncCoordinator(
+            store = installationStore,
+            gatewayClient = pushGatewayClient,
+            transportForConnection = { connId ->
+                val conn = installationStore.findById(connId)
+                when (conn?.kind) {
+                    com.lumenopen.lumenbox.storage.InstallationConnection.Kind.PERSONAL_MAC ->
+                        personalCoordinator.activeApiTransport()
+                    com.lumenopen.lumenbox.storage.InstallationConnection.Kind.ORGANISATION ->
+                        organisationCoordinator.transportForOrganisation(connId)
+                    null -> null
+                }
+            },
+        )
+        LumenBoxMessagingBridge.ensureNotificationChannel(applicationContext)
 
         routeIncomingDeepLink(intent)
 
@@ -80,11 +102,14 @@ class MainActivity : ComponentActivity() {
                     store = installationStore,
                     personalCoordinator = personalCoordinator,
                     organisationCoordinator = organisationCoordinator,
+                    pushSyncCoordinator = pushSyncCoordinator,
                     stepUpGateway = stepUpGateway,
                     pendingDeepLinkPairUri = pendingPairUri,
                     onConsumeDeepLinkPairUri = { pendingPairUri = null },
                     pendingOAuthCallbackUri = pendingOAuthCallbackUri,
                     onConsumeOAuthCallbackUri = { pendingOAuthCallbackUri = null },
+                    pendingOpenDeepLinkTarget = pendingOpenTarget,
+                    onConsumeOpenDeepLinkTarget = { pendingOpenTarget = null },
                 )
             }
         }
@@ -105,11 +130,16 @@ class MainActivity : ComponentActivity() {
 
     private fun routeIncomingDeepLink(intent: Intent?) {
         val data = intent?.data ?: return
-        if (data.scheme != "lumenbox") return
-        when (data.host) {
+        if (!data.scheme.equals("lumenbox", ignoreCase = true)) return
+        when (data.host?.lowercase()) {
             "pair" -> pendingPairUri = data.toString()
             "oauth" -> if (data.path == "/callback") {
                 pendingOAuthCallbackUri = data.toString()
+            }
+            "open" -> {
+                LumenBoxDeepLinkRouter.parseOpenUri(data.toString())?.let { target ->
+                    pendingOpenTarget = target
+                }
             }
         }
     }

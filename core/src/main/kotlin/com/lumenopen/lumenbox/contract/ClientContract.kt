@@ -266,6 +266,9 @@ data class NotificationSummary(
     val title: String,
     val body: String,
     val createdAt: String,
+    val inboxId: String? = null,
+    val conversationId: String? = null,
+    val workId: String? = null,
 )
 
 @Serializable

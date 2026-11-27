@@ -18,5 +18,5 @@ jobs:
           java-version: "17"
       - name: Accept Android SDK licenses
         run: yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
-      - name: Run Kotlin core unit tests and Android app compile check
-        run: ./gradlew :core:test :app:compileDebugKotlin
+      - name: Run Kotlin core unit tests, debug compile, and R8 release APK/AAB verification
+        run: bash scripts/verify-release-build.sh

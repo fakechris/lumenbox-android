@@ -62,6 +62,8 @@ fun NeedsYouInboxSection(
     isOnline: Boolean,
     pendingOfflineActions: Int = 0,
     coordinator: NeedsYouInboxCoordinator,
+    highlightedInboxId: String? = null,
+    onClearHighlightedInboxId: (() -> Unit)? = null,
     onItemsChanged: (List<InboxDecisionItem>) -> Unit,
     onAccessRemoved: (() -> Unit)? = null,
 ) {
@@ -153,8 +155,27 @@ fun NeedsYouInboxSection(
             if (items.isEmpty()) {
                 Text("当前没有等待你处理的决策。", style = MaterialTheme.typography.bodyMedium)
             } else {
-                for (item in items) {
+                val orderedItems = if (!highlightedInboxId.isNullOrBlank()) {
+                    val focused = items.filter { it.id == highlightedInboxId }
+                    val rest = items.filterNot { it.id == highlightedInboxId }
+                    focused + rest
+                } else {
+                    items
+                }
+                for (item in orderedItems) {
                     HorizontalDivider()
+                    if (item.id == highlightedInboxId) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            AssistChip(
+                                onClick = { onClearHighlightedInboxId?.invoke() },
+                                label = { Text("深链定位待决项 · ${item.id}") },
+                            )
+                        }
+                    }
                     val isItemBusy = busyItemId == item.id
                     when (item) {
                         is InboxDecisionItem.ToolApproval -> ToolApprovalCard(
