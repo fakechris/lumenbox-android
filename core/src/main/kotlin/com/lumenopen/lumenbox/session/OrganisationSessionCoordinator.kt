@@ -268,6 +268,14 @@ class OrganisationSessionCoordinator(
             tokenManager = tokenManager,
         )
 
+    fun desktopStreamOpenerForOrganisation(connectionId: String): com.lumenopen.lumenbox.desktop.DesktopBinaryStreamOpener =
+        com.lumenopen.lumenbox.desktop.DesktopBinaryStreamOpener.overWebSocket(
+            serverOriginProvider = {
+                store.findById(connectionId)?.serverOriginOrRelayUrl
+                    ?: throw IllegalStateException("Organisation connection $connectionId missing")
+            },
+        )
+
     fun readCachedInboxItems(connectionId: String): List<InboxDecisionItem> {
         val offline = runCatching { store.openOfflineStore(connectionId) }.getOrNull() ?: return emptyList()
         return offline.getJson(INBOX_TABLE, INBOX_ROW, ListSerializer(InboxDecisionItem.serializer()))
