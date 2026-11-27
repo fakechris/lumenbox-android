@@ -261,6 +261,13 @@ class OrganisationSessionCoordinator(
     fun transportForOrganisation(connectionId: String): ApiTransport =
         tokenManager.createAuthenticatedTransport(connectionId, authenticatedRoundTrip)
 
+    fun sseConnectorForOrganisation(connectionId: String): com.lumenopen.lumenbox.conversation.LiveSseConnector =
+        com.lumenopen.lumenbox.conversation.LiveSseConnector.overOrganisationHttps(
+            connectionId = connectionId,
+            store = store,
+            tokenManager = tokenManager,
+        )
+
     fun readCachedInboxItems(connectionId: String): List<InboxDecisionItem> {
         val offline = runCatching { store.openOfflineStore(connectionId) }.getOrNull() ?: return emptyList()
         return offline.getJson(INBOX_TABLE, INBOX_ROW, ListSerializer(InboxDecisionItem.serializer()))

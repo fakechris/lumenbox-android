@@ -294,6 +294,9 @@ class PersonalMacSessionCoordinator(
         return EncryptedRelayTransport.overMux(mux)
     }
 
+    /** Exposes the active authenticated [com.lumenopen.lumenbox.relay.RelayMux] for multiplexed streams. */
+    fun activeRelayMux(): com.lumenopen.lumenbox.relay.RelayMux? = activeSession?.mux
+
     /** Saves the latest `Needs you` items into the encrypted offline cache and updates the top-level count. */
     fun cacheInboxItems(items: List<InboxDecisionItem>) {
         val personal = store.findPersonalInstallation() ?: return
