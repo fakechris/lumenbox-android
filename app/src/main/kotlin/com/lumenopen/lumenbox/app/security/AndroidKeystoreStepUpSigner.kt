@@ -119,7 +119,7 @@ class StepUpBiometricGateway(private val signer: AndroidKeystoreStepUpSigner) {
         val prompt = BiometricPrompt.Builder(context)
             .setTitle(title)
             .setSubtitle(subtitle)
-            .setNegativeButton(context.getString(android.R.string.cancel), executor) { _, _, _ ->
+            .setNegativeButton(context.getString(android.R.string.cancel), executor) { _, _ ->
                 if (continuation.context.isActive) {
                     continuation.resumeWith(Result.failure(StepUpCancelledException("User pressed negative button")))
                 }
