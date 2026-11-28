@@ -14,6 +14,7 @@ dependencies {
     api(libs.kotlinx.serialization.json)
     api(libs.kotlinx.coroutines.core)
     api(libs.zxing.core)
+    implementation(libs.bouncycastle.bcprov)
 
     testImplementation(libs.junit.jupiter)
     testImplementation(libs.kotlinx.coroutines.test)
@@ -43,6 +44,12 @@ openApiGenerate {
             "enumPropertyNaming" to "UPPERCASE",
         )
     )
+}
+
+// Conformance checks shared with the instrumented tests in `:app` (`app/src/androidTest`), so the
+// same vectors run on OpenJDK here and on Android's runtime there (INV-2291).
+kotlin.sourceSets.named("test") {
+    kotlin.srcDir("src/conformanceTest/kotlin")
 }
 
 kotlin.sourceSets.named("main") {
