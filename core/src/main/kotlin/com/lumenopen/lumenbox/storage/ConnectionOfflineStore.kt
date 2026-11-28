@@ -1,5 +1,6 @@
 package com.lumenopen.lumenbox.storage
 
+import com.lumenopen.lumenbox.crypto.ChaCha20Poly1305
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -73,7 +74,7 @@ class ConnectionOfflineStore private constructor(
 ) {
     private val lock = Any()
     private val random = SecureRandom()
-    private val keySpec = SecretKeySpec(dbKey.copyOf(), "ChaCha20")
+    private val keySpec = SecretKeySpec(dbKey.copyOf(), ChaCha20Poly1305.KEY_ALGORITHM)
     private val json = Json { ignoreUnknownKeys = true }
     /** tableName -> (primaryKey -> value), populated lazily per table on first access. */
     private val tables = HashMap<String, HashMap<String, ByteArray>>()
@@ -82,8 +83,8 @@ class ConnectionOfflineStore private constructor(
 
     companion object {
         private val MAGIC: ByteArray = "LBX1".toByteArray(StandardCharsets.US_ASCII)
-        private const val NONCE_BYTES = 12
-        private const val TAG_BYTES = 16
+        private const val NONCE_BYTES = ChaCha20Poly1305.NONCE_BYTES
+        private const val TAG_BYTES = ChaCha20Poly1305.TAG_BYTES
         private const val META_TABLE = "meta"
         private const val DURABLE_SEQ_ROW = "durableSeq"
         private const val OUTBOUND_SEQ_ROW = "outboundSeq"
@@ -246,7 +247,7 @@ class ConnectionOfflineStore private constructor(
 
     private fun seal(tableName: String, primaryKey: String, plaintext: ByteArray): ByteArray {
         val nonce = ByteArray(NONCE_BYTES).also(random::nextBytes)
-        val cipher = Cipher.getInstance("ChaCha20-Poly1305")
+        val cipher = ChaCha20Poly1305.newCipher()
         cipher.init(Cipher.ENCRYPT_MODE, keySpec, IvParameterSpec(nonce))
         cipher.updateAAD(aad(tableName, primaryKey))
         return nonce + cipher.doFinal(plaintext)
@@ -256,7 +257,7 @@ class ConnectionOfflineStore private constructor(
         if (sealed.size < NONCE_BYTES + TAG_BYTES) {
             throw OfflineCacheCorruptedException(tableName, "Sealed row shorter than nonce + tag")
         }
-        val cipher = Cipher.getInstance("ChaCha20-Poly1305")
+        val cipher = ChaCha20Poly1305.newCipher()
         cipher.init(Cipher.DECRYPT_MODE, keySpec, IvParameterSpec(sealed, 0, NONCE_BYTES))
         cipher.updateAAD(aad(tableName, primaryKey))
         return try {
