@@ -346,8 +346,8 @@ class PkceOAuthClient(
             if (part.isEmpty()) continue
             val idx = part.indexOf('=')
             if (idx <= 0) continue
-            val k = URLDecoder.decode(part.substring(0, idx), StandardCharsets.UTF_8)
-            val v = URLDecoder.decode(part.substring(idx + 1), StandardCharsets.UTF_8)
+            val k = URLDecoder.decode(part.substring(0, idx), StandardCharsets.UTF_8.name())
+            val v = URLDecoder.decode(part.substring(idx + 1), StandardCharsets.UTF_8.name())
             params.putIfAbsent(k, v)
         }
         return ParsedOAuthCallback(

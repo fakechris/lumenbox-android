@@ -212,4 +212,19 @@ class ConnectionOfflineStoreTest {
         assertEquals(11L, store.durableSeq())
         store.close()
     }
+
+    @Test
+    fun `close zeroes the store's own key copy, so a caller reusing its array reopens the same data`() {
+        val dir = File(tempDir, "direct-open")
+        val dbKey = ByteArray(32) { (it * 7 + 3).toByte() }
+        val original = dbKey.copyOf()
+        val first = ConnectionOfflineStore.open("conn-direct", dir, dbKey)
+        first.putText("workspace", "overview", "kept across close")
+        first.close()
+        assertTrue(original.contentEquals(dbKey), "close() must not zero the caller's key array")
+
+        val reopened = ConnectionOfflineStore.open("conn-direct", dir, dbKey)
+        assertEquals("kept across close", reopened.getText("workspace", "overview"))
+        reopened.close()
+    }
 }

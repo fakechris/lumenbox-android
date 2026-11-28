@@ -93,7 +93,8 @@ class ConnectionOfflineStore private constructor(
         fun open(connectionId: String, directory: File, dbKey: ByteArray): ConnectionOfflineStore {
             require(dbKey.size == 32) { "dbKey must be 256-bit" }
             directory.mkdirs()
-            return ConnectionOfflineStore(connectionId, directory, dbKey)
+            // A copy: close() zeroes the store's key, and must not zero the caller's array with it.
+            return ConnectionOfflineStore(connectionId, directory, dbKey.copyOf())
         }
     }
 

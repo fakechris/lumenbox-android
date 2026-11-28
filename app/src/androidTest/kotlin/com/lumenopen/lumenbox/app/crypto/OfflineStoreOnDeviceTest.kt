@@ -17,12 +17,12 @@ class OfflineStoreOnDeviceTest {
         val dir = File(context.cacheDir, "offline-store-on-device").apply { deleteRecursively() }
         val dbKey = ByteArray(32) { (it * 7 + 3).toByte() }
         try {
-            val first = ConnectionOfflineStore.open("conn-device", dir, dbKey.copyOf())
+            val first = ConnectionOfflineStore.open("conn-device", dir, dbKey)
             first.putText("workspace", "overview", "sealed on the device")
             first.advanceDurableSeq(41)
             first.close()
 
-            val reopened = ConnectionOfflineStore.open("conn-device", dir, dbKey.copyOf())
+            val reopened = ConnectionOfflineStore.open("conn-device", dir, dbKey)
             assertEquals("sealed on the device", reopened.getText("workspace", "overview"))
             assertEquals(41L, reopened.durableSeq())
             reopened.close()
