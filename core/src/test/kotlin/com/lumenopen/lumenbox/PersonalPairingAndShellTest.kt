@@ -118,8 +118,8 @@ class PersonalPairingAndShellTest {
         val unrelated = PairingQrDecoder.evaluateDecodedText("https://example.org/welcome")
         assertTrue(unrelated is QrScanOutcome.IgnoredNonLumenBox)
 
-        // Verify 24 consecutive random X25519 keypairs also decode cleanly on 280x280 Y-plane via binarizer fallback
-        repeat(24) { round ->
+        // Verify 200 consecutive random X25519 keypairs decode cleanly on 280x280 Y-plane across binarizer & pure-grid fallbacks (INV-2300)
+        repeat(200) { round ->
             val rndKp = X25519Keypair.generate()
             val rndUri = "lumenbox://pair#hostPub=${b64Encoder.encodeToString(rndKp.publicKey)}" +
                 "&relay=wss%3A%2F%2Frelay.lumenbox.com&route=rt_rnd_$round" +

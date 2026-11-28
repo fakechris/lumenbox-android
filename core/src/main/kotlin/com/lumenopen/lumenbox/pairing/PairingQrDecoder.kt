@@ -34,6 +34,12 @@ object PairingQrDecoder {
         DecodeHintType.TRY_HARDER to true,
     )
 
+    private val pureGridHints: Map<DecodeHintType, Any> = mapOf(
+        DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE),
+        DecodeHintType.CHARACTER_SET to "UTF-8",
+        DecodeHintType.PURE_BARCODE to true,
+    )
+
     fun evaluateDecodedText(
         rawText: String,
         nowEpochMillis: Long = System.currentTimeMillis(),
@@ -87,15 +93,20 @@ object PairingQrDecoder {
             false,
         )
         val reader = QRCodeReader()
-        val decodedText = tryDecodeBitmap(reader, BinaryBitmap(HybridBinarizer(source)))
-            ?: tryDecodeBitmap(reader, BinaryBitmap(GlobalHistogramBinarizer(source)))
+        val decodedText = tryDecodeBitmap(reader, BinaryBitmap(HybridBinarizer(source)), hints)
+            ?: tryDecodeBitmap(reader, BinaryBitmap(GlobalHistogramBinarizer(source)), hints)
+            ?: tryDecodeBitmap(reader, BinaryBitmap(GlobalHistogramBinarizer(source)), pureGridHints)
             ?: return QrScanOutcome.NoQrFound
         return evaluateDecodedText(decodedText, nowEpochMillis)
     }
 
-    private fun tryDecodeBitmap(reader: QRCodeReader, bitmap: BinaryBitmap): String? =
+    private fun tryDecodeBitmap(
+        reader: QRCodeReader,
+        bitmap: BinaryBitmap,
+        decodeHints: Map<DecodeHintType, Any>,
+    ): String? =
         try {
-            reader.decode(bitmap, hints).text
+            reader.decode(bitmap, decodeHints).text
         } catch (_: ReaderException) {
             null
         } finally {
