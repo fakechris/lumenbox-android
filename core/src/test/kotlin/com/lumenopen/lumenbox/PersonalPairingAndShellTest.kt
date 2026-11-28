@@ -68,8 +68,8 @@ class PersonalPairingAndShellTest {
             "&exp=$validExpSec"
 
         // Render synthetic QR into a padded Y-plane (rowStride = width + 24, mimicking CameraX alignment)
-        val width = 280
-        val height = 280
+        val width = 360
+        val height = 360
         val rowStride = width + 24
         val matrix = QRCodeWriter().encode(
             validUri,
@@ -117,6 +117,24 @@ class PersonalPairingAndShellTest {
         // Unrelated website QR is ignored without surfacing scary errors
         val unrelated = PairingQrDecoder.evaluateDecodedText("https://example.org/welcome")
         assertTrue(unrelated is QrScanOutcome.IgnoredNonLumenBox)
+
+        // Verify 24 consecutive random X25519 keypairs also decode cleanly on 280x280 Y-plane via binarizer fallback
+        repeat(24) { round ->
+            val rndKp = X25519Keypair.generate()
+            val rndUri = "lumenbox://pair#hostPub=${b64Encoder.encodeToString(rndKp.publicKey)}" +
+                "&relay=wss%3A%2F%2Frelay.lumenbox.com&route=rt_rnd_$round" +
+                "&pairSecret=${b64Encoder.encodeToString(pairSecret)}&exp=$validExpSec"
+            val smallMatrix = QRCodeWriter().encode(rndUri, BarcodeFormat.QR_CODE, 280, 280, mapOf(EncodeHintType.MARGIN to 2))
+            val smallStride = 304
+            val smallY = ByteArray(smallStride * 280) { 0xff.toByte() }
+            for (y in 0 until 280) {
+                for (x in 0 until 280) {
+                    smallY[y * smallStride + x] = if (smallMatrix.get(x, y)) 0x10.toByte() else 0xf0.toByte()
+                }
+            }
+            val rndOutcome = PairingQrDecoder.decodeYPlane(smallY, 280, 280, smallStride, nowMillis)
+            assertTrue(rndOutcome is QrScanOutcome.ValidOffer, "Round $round failed to decode high-density QR")
+        }
     }
 
     @Test

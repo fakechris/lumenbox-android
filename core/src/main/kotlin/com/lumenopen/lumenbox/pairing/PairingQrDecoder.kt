@@ -5,6 +5,7 @@ import com.google.zxing.BinaryBitmap
 import com.google.zxing.DecodeHintType
 import com.google.zxing.PlanarYUVLuminanceSource
 import com.google.zxing.ReaderException
+import com.google.zxing.common.GlobalHistogramBinarizer
 import com.google.zxing.common.HybridBinarizer
 import com.google.zxing.qrcode.QRCodeReader
 import com.lumenopen.lumenbox.relay.NoiseRelayException
@@ -22,6 +23,8 @@ sealed interface QrScanOutcome {
  *
  * - Decodes CameraX `ImageFormat.YUV_420_888` Y-plane luminance directly (including padded `rowStride > width`),
  *   requiring zero Google Play Services so domestic and enterprise air-gapped Android phones work identically.
+ * - Tries `HybridBinarizer` first, falling back to `GlobalHistogramBinarizer` when high-density QR modules
+ *   are small relative to 8x8 local block thresholds.
  * - Enforces `#fragment`-only `lumenbox://pair#...` validation and rejects query-string leaks or expired codes.
  */
 object PairingQrDecoder {
@@ -83,15 +86,19 @@ object PairingQrDecoder {
             height,
             false,
         )
-        val bitmap = BinaryBitmap(HybridBinarizer(source))
         val reader = QRCodeReader()
-        val decodedText = try {
+        val decodedText = tryDecodeBitmap(reader, BinaryBitmap(HybridBinarizer(source)))
+            ?: tryDecodeBitmap(reader, BinaryBitmap(GlobalHistogramBinarizer(source)))
+            ?: return QrScanOutcome.NoQrFound
+        return evaluateDecodedText(decodedText, nowEpochMillis)
+    }
+
+    private fun tryDecodeBitmap(reader: QRCodeReader, bitmap: BinaryBitmap): String? =
+        try {
             reader.decode(bitmap, hints).text
         } catch (_: ReaderException) {
-            return QrScanOutcome.NoQrFound
+            null
         } finally {
             reader.reset()
         }
-        return evaluateDecodedText(decodedText, nowEpochMillis)
-    }
 }
