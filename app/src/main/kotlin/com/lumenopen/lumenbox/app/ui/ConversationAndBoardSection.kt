@@ -1,6 +1,8 @@
 package com.lumenopen.lumenbox.app.ui
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -8,19 +10,41 @@ import android.media.MediaRecorder
 import android.net.Uri
 import android.os.Build
 import android.provider.OpenableColumns
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.browser.customtabs.CustomTabsIntent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -32,19 +56,32 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
@@ -53,31 +90,52 @@ import com.lumenopen.lumenbox.contract.ApiEnvelopeException
 import com.lumenopen.lumenbox.contract.OpenEnum
 import com.lumenopen.lumenbox.conversation.AttachmentMediaKind
 import com.lumenopen.lumenbox.conversation.BoardSnapshot
+import com.lumenopen.lumenbox.conversation.ChatScrollAnchorMachine
+import com.lumenopen.lumenbox.conversation.ChatScrollAnchorState
+import com.lumenopen.lumenbox.conversation.CodeTokenKind
 import com.lumenopen.lumenbox.conversation.CommittedMessage
 import com.lumenopen.lumenbox.conversation.ConversationAndBoardCoordinator
+import com.lumenopen.lumenbox.conversation.ConversationHapticMoment
+import com.lumenopen.lumenbox.conversation.ConversationHapticTriggerDetector
+import com.lumenopen.lumenbox.conversation.ConversationKeywordSearch
+import com.lumenopen.lumenbox.conversation.ConversationNoiseReducer
 import com.lumenopen.lumenbox.conversation.ConversationSummary
 import com.lumenopen.lumenbox.conversation.DeliverableMetadata
 import com.lumenopen.lumenbox.conversation.DeliverablePreviewTicket
+import com.lumenopen.lumenbox.conversation.HapticObservationSnapshot
+import com.lumenopen.lumenbox.conversation.HonestWorkingIndicatorState
+import com.lumenopen.lumenbox.conversation.HonestWorkingPhase
+import com.lumenopen.lumenbox.conversation.HonestWorkingStateMachine
 import com.lumenopen.lumenbox.conversation.LiveTurnDraft
 import com.lumenopen.lumenbox.conversation.LocalUploadAttachment
 import com.lumenopen.lumenbox.conversation.MarkdownBlock
 import com.lumenopen.lumenbox.conversation.MarkdownBlockParser
 import com.lumenopen.lumenbox.conversation.MessageRole
+import com.lumenopen.lumenbox.conversation.ProcessDisclosurePill
 import com.lumenopen.lumenbox.conversation.ShowUiCard
 import com.lumenopen.lumenbox.conversation.ToolRunStatus
 import com.lumenopen.lumenbox.conversation.ToolTimelineEntry
+import com.lumenopen.lumenbox.conversation.VirtualizedChatTimelineItem
 import com.lumenopen.lumenbox.conversation.WorkItemSummary
 import com.lumenopen.lumenbox.conversation.WorkStateKind
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
 
 /**
- * Streaming conversations list + active conversation detail (`GET /conversations/{id}/stream`),
- * Markdown & code-block renderer, tool timeline, `ShowUI` card actions, `POST /stop`, and
- * idempotent Photo Picker / SAF file / voice upload composer (`docs/106 §4.2`, `docs/110 §2`, INV-2257).
+ * Virtualized conversation directory (`LazyColumn`) + dedicated full-screen immersive conversation
+ * screen (`INV-2257`, `INV-2271`).
+ *
+ * - Virtualized `LazyColumn` with stable `key` and `contentType`, fixed-aspect-ratio placeholders,
+ *   and smart auto-follow that pauses when the user scrolls up to inspect history.
+ * - Single-line progressive-disclosure capsule (`ProcessDisclosurePill`) collapsing `thinking`
+ *   and consecutive tool runs by default, expanding on tap.
+ * - Syntax-highlighted monospace code blocks with horizontal scroll and one-tap copy + haptics.
+ * - Honest working indicator gated on `isHostReachable && isTurnRunning` with instant offline
+ *   cut-off and `2.5s` completion hold, plus in-conversation keyword search.
  */
 @Composable
 fun ConversationsSection(
@@ -88,6 +146,7 @@ fun ConversationsSection(
     onSelectConversationId: (String?) -> Unit,
     onOpenDeliverableId: (String) -> Unit,
     onAccessRemoved: (() -> Unit)? = null,
+    modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -104,7 +163,6 @@ fun ConversationsSection(
     }
     var feedback by remember(connectionId, selectedConversationId) { mutableStateOf<String?>(null) }
 
-    // Initial + online resume catch-up
     LaunchedEffect(connectionId, isOnline) {
         conversations = coordinator.readCachedConversations()
         if (isOnline) {
@@ -120,7 +178,6 @@ fun ConversationsSection(
         }
     }
 
-    // Active conversation messages + transient live stream subscription
     LaunchedEffect(connectionId, selectedConversationId, isOnline) {
         val convId = selectedConversationId ?: return@LaunchedEffect
         messages = coordinator.readCachedMessages(convId)
@@ -135,7 +192,6 @@ fun ConversationsSection(
             }
         }
 
-        // Subscribe to GET /api/v1/conversations/{id}/stream while this conversation stays open
         runCatching {
             coordinator.collectConversationStream(convId) {
                 messages = coordinator.readCachedMessages(convId)
@@ -149,9 +205,9 @@ fun ConversationsSection(
     }
 
     if (selectedConversationId == null) {
-        ConversationListCard(
+        ConversationDirectoryScreen(
             conversations = conversations,
-            isOnline = isOnline,
+            isHostReachable = isOnline,
             pendingPromptCount = coordinator.pendingPromptCount(),
             durableSeq = coordinator.currentDurableSeq(),
             feedback = feedback,
@@ -172,16 +228,17 @@ fun ConversationsSection(
                 }
             },
             onOpenConversation = { convId -> onSelectConversationId(convId) },
+            modifier = modifier,
         )
     } else {
         val summary = conversations.firstOrNull { it.id == selectedConversationId }
         val activeLiveTurn = liveTurnsMap[selectedConversationId]
-        StreamingConversationDetailCard(
+        ImmersiveStreamingConversationScreen(
             conversationId = selectedConversationId,
             summary = summary,
             messages = messages,
             liveTurn = activeLiveTurn,
-            isOnline = isOnline,
+            isHostReachable = isOnline,
             feedback = feedback,
             onBackToList = { onSelectConversationId(null) },
             onStopTurn = {
@@ -245,83 +302,128 @@ fun ConversationsSection(
                 }
             },
             onOpenDeliverableId = onOpenDeliverableId,
+            modifier = modifier,
         )
     }
 }
 
 @Composable
-private fun ConversationListCard(
+private fun ConversationDirectoryScreen(
     conversations: List<ConversationSummary>,
-    isOnline: Boolean,
+    isHostReachable: Boolean,
     pendingPromptCount: Int,
     durableSeq: Long,
     feedback: String?,
     onRefresh: () -> Unit,
     onOpenConversation: (String) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+    Column(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
+            Column(modifier = Modifier.weight(1f)) {
+                Text("消息与会话 (${conversations.size})", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    buildString {
+                        append("账本水位 #$durableSeq")
+                        if (!isHostReachable) append(" · 离线只读/幂等入队")
+                        if (pendingPromptCount > 0) append(" · 待同步 $pendingPromptCount 条")
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (isHostReachable) {
+                OutlinedButton(onClick = onRefresh) {
+                    Text("同步")
+                }
+            }
+        }
+
+        feedback?.let { msg ->
+            Text(msg, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        }
+
+        if (conversations.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                contentAlignment = Alignment.Center,
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("对话会话 (${conversations.size})", style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        "持久账本水位 durableSeq=$durableSeq" +
-                            if (pendingPromptCount > 0) " · 待发送离线队列 $pendingPromptCount 条" else "",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-                if (isOnline) {
-                    OutlinedButton(onClick = onRefresh) {
-                        Text("增量同步")
-                    }
-                }
+                Text(
+                    "暂无会话记录。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
-
-            feedback?.let { msg ->
-                Text(msg, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-            }
-
-            if (conversations.isEmpty()) {
-                Text("暂无会话记录。", style = MaterialTheme.typography.bodyMedium)
-            } else {
-                for (conv in conversations) {
-                    HorizontalDivider()
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
+        } else {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(bottom = 16.dp),
+            ) {
+                items(
+                    items = conversations,
+                    key = { it.id },
+                    contentType = { "conversation_summary_row" },
+                ) { conv ->
+                    val honestRunning = isHostReachable && conv.running
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onOpenConversation(conv.id) },
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surface,
+                        ),
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
+                        Column(
+                            modifier = Modifier.padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
                             Row(
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
-                                Text(conv.title, style = MaterialTheme.typography.titleSmall)
-                                if (conv.running) {
+                                Text(
+                                    conv.title,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                if (honestRunning) {
+                                    BreathingStatusChip(label = "执行中")
+                                } else if (conv.running && !isHostReachable) {
                                     AssistChip(
                                         onClick = {},
                                         enabled = false,
-                                        label = { Text("执行中") },
+                                        label = { Text("已断连暂停") },
                                     )
                                 }
                             }
                             Text(
                                 listOfNotNull(conv.agentName ?: conv.agentId, conv.updatedAt).joinToString(" · "),
                                 style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                             conv.lastMessagePreview?.takeIf { it.isNotBlank() }?.let { preview ->
-                                Text(preview, style = MaterialTheme.typography.bodySmall, maxLines = 2)
+                                Text(
+                                    preview,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 2,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
                             }
-                        }
-                        OutlinedButton(onClick = { onOpenConversation(conv.id) }) {
-                            Text("打开")
                         }
                     }
                 }
@@ -332,26 +434,147 @@ private fun ConversationListCard(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun StreamingConversationDetailCard(
+private fun ImmersiveStreamingConversationScreen(
     conversationId: String,
     summary: ConversationSummary?,
     messages: List<CommittedMessage>,
     liveTurn: LiveTurnDraft?,
-    isOnline: Boolean,
+    isHostReachable: Boolean,
     feedback: String?,
     onBackToList: () -> Unit,
     onStopTurn: () -> Unit,
     onCardAction: (cardId: String, actionId: String) -> Unit,
     onSendPrompt: (text: String, attachments: List<LocalUploadAttachment>) -> Unit,
     onOpenDeliverableId: (String) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
+    BackHandler(onBack = onBackToList)
+
     val context = LocalContext.current
+    val haptic = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
-    var inputDraft by remember(conversationId) { mutableStateOf("") }
+    val listState = rememberLazyListState()
+
+    var inputDraft by rememberSaveable(conversationId) { mutableStateOf("") }
     var stagedAttachments by remember(conversationId) { mutableStateOf<List<LocalUploadAttachment>>(emptyList()) }
     var localPickerError by remember(conversationId) { mutableStateOf<String?>(null) }
 
-    // Voice recorder state
+    // In-conversation keyword search state
+    var isSearchOpen by rememberSaveable(conversationId) { mutableStateOf(false) }
+    var searchQuery by rememberSaveable(conversationId) { mutableStateOf("") }
+    var activeMatchCursor by rememberSaveable(conversationId) { mutableIntStateOf(0) }
+
+    val searchMatches = remember(messages, searchQuery) {
+        ConversationKeywordSearch.search(messages, searchQuery)
+    }
+
+    // Honest working-state machine (gated on isHostReachable && isTurnRunning + 2.5s completion hold)
+    val isTurnRunning = (liveTurn?.isRunning == true) || (summary?.running == true)
+    var workingState by remember(conversationId) {
+        mutableStateOf(
+            HonestWorkingStateMachine.transition(
+                previous = HonestWorkingIndicatorState(),
+                isHostReachable = isHostReachable,
+                isTurnRunning = isTurnRunning,
+                nowEpochMillis = System.currentTimeMillis(),
+            )
+        )
+    }
+
+    LaunchedEffect(isHostReachable, isTurnRunning) {
+        val now = System.currentTimeMillis()
+        val next = HonestWorkingStateMachine.transition(
+            previous = workingState,
+            isHostReachable = isHostReachable,
+            isTurnRunning = isTurnRunning,
+            nowEpochMillis = now,
+        )
+        workingState = next
+        val remaining = HonestWorkingStateMachine.remainingHoldMillis(next, now)
+        if (remaining > 0L) {
+            delay(remaining)
+            workingState = HonestWorkingStateMachine.transition(
+                previous = workingState,
+                isHostReachable = isHostReachable,
+                isTurnRunning = isTurnRunning,
+                nowEpochMillis = System.currentTimeMillis(),
+            )
+        }
+    }
+
+    // Subtle haptics on first streaming token arrival
+    var hapticSnapshot by remember(conversationId) { mutableStateOf(HapticObservationSnapshot()) }
+    LaunchedEffect(liveTurn?.turnId, liveTurn?.responseText?.isNotEmpty(), liveTurn?.thinkingText?.isNotEmpty(), liveTurn?.toolCalls?.size, isHostReachable) {
+        val (nextSnap, moments) = ConversationHapticTriggerDetector.evaluate(
+            previous = hapticSnapshot,
+            liveTurn = liveTurn,
+            currentInboxCount = hapticSnapshot.inboxCount,
+            isHostReachable = isHostReachable,
+        )
+        hapticSnapshot = nextSnap
+        if (ConversationHapticMoment.FIRST_STREAMING_TOKEN in moments) {
+            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+        }
+    }
+
+    // Virtualized timeline projection
+    val timelineItems = remember(messages, liveTurn, isHostReachable) {
+        ConversationNoiseReducer.projectTimeline(
+            messages = messages,
+            liveTurn = liveTurn,
+            isHostReachable = isHostReachable,
+        )
+    }
+
+    // Smart auto-follow scroll anchor state machine
+    var scrollAnchor by remember(conversationId) {
+        mutableStateOf(ChatScrollAnchorState(isPinnedToBottom = true, lastObservedMessageCount = timelineItems.size))
+    }
+
+    val isViewportAtBottom by remember {
+        derivedStateOf {
+            val layout = listState.layoutInfo
+            val total = layout.totalItemsCount
+            if (total == 0) {
+                true
+            } else {
+                val lastVisible = layout.visibleItemsInfo.lastOrNull()
+                lastVisible != null && lastVisible.index >= total - 1
+            }
+        }
+    }
+
+    LaunchedEffect(isViewportAtBottom, listState.isScrollInProgress) {
+        if (listState.isScrollInProgress || isViewportAtBottom) {
+            scrollAnchor = ChatScrollAnchorMachine.onViewportPositionChanged(
+                previous = scrollAnchor,
+                isAtBottom = isViewportAtBottom,
+            )
+        }
+    }
+
+    LaunchedEffect(timelineItems.size) {
+        val (nextAnchor, shouldScroll) = ChatScrollAnchorMachine.onMessageCountUpdated(
+            previous = scrollAnchor,
+            newMessageCount = timelineItems.size,
+        )
+        scrollAnchor = nextAnchor
+        if (shouldScroll && timelineItems.isNotEmpty() && !isSearchOpen) {
+            listState.animateScrollToItem(timelineItems.lastIndex)
+        }
+    }
+
+    LaunchedEffect(liveTurn?.responseText?.length, liveTurn?.toolCalls?.size) {
+        if (liveTurn != null &&
+            ChatScrollAnchorMachine.onStreamingDeltaArrived(scrollAnchor) &&
+            timelineItems.isNotEmpty() &&
+            !isSearchOpen
+        ) {
+            listState.scrollToItem(timelineItems.lastIndex)
+        }
+    }
+
+    // Voice recorder lifecycle
     var activeRecorder by remember { mutableStateOf<MediaRecorder?>(null) }
     var activeRecordingFile by remember { mutableStateOf<File?>(null) }
     val isRecording = activeRecorder != null
@@ -404,185 +627,558 @@ private fun StreamingConversationDetailCard(
         }
     }
 
-    val isTurnActive = (liveTurn?.isRunning == true) || (summary?.running == true)
+    Column(modifier = modifier.fillMaxSize()) {
+        // 1. Immersive conversation top header + Honest Working Indicator
+        Surface(
+            tonalElevation = 2.dp,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        TextButton(onClick = onBackToList) {
+                            Text("← 返回")
+                        }
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = summary?.title ?: "会话 $conversationId",
+                                style = MaterialTheme.typography.titleMedium,
+                                maxLines = 1,
+                            )
+                            HonestWorkingSubtitleRow(
+                                agentLabel = summary?.agentName ?: summary?.agentId ?: "Agent",
+                                indicatorState = workingState,
+                            )
+                        }
+                    }
 
-    Card(modifier = Modifier.fillMaxWidth()) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        TextButton(
+                            onClick = {
+                                isSearchOpen = !isSearchOpen
+                                if (!isSearchOpen) searchQuery = ""
+                            }
+                        ) {
+                            Text(if (isSearchOpen) "收起搜索" else "搜索")
+                        }
+                        if (workingState.isBreathingWorking) {
+                            OutlinedButton(
+                                onClick = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    onStopTurn()
+                                }
+                            ) {
+                                Text("停止")
+                            }
+                        }
+                    }
+                }
+
+                // Honest offline cut-off banner (replaces fake spinning indicator on disconnect / Mac sleep)
+                AnimatedVisibility(visible = workingState.showOfflineBanner) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.tertiaryContainer,
+                        shape = MaterialTheme.shapes.small,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            text = "连接已断开或宿主机休眠，实时工作态已暂停；当前浏览本地加密历史，你发送的消息将加密入队并在重连后幂等重发。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        )
+                    }
+                }
+
+                // In-conversation keyword search bar
+                AnimatedVisibility(visible = isSearchOpen) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = {
+                                searchQuery = it
+                                activeMatchCursor = 0
+                            },
+                            singleLine = true,
+                            placeholder = { Text("搜索当前会话关键词、工具输出或卡片…") },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        if (searchQuery.isNotBlank()) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text = if (searchMatches.isEmpty()) {
+                                        "未找到匹配项"
+                                    } else {
+                                        "找到 ${searchMatches.size} 条匹配消息（当前 ${activeMatchCursor + 1}/${searchMatches.size}）"
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                if (searchMatches.isNotEmpty()) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        TextButton(
+                                            onClick = {
+                                                val prevIdx = if (activeMatchCursor > 0) activeMatchCursor - 1 else searchMatches.lastIndex
+                                                activeMatchCursor = prevIdx
+                                                scope.launch {
+                                                    listState.animateScrollToItem(searchMatches[prevIdx].timelineIndex)
+                                                }
+                                            }
+                                        ) {
+                                            Text("上一处")
+                                        }
+                                        TextButton(
+                                            onClick = {
+                                                val nextIdx = (activeMatchCursor + 1) % searchMatches.size
+                                                activeMatchCursor = nextIdx
+                                                scope.launch {
+                                                    listState.animateScrollToItem(searchMatches[nextIdx].timelineIndex)
+                                                }
+                                            }
+                                        ) {
+                                            Text("下一处")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        HorizontalDivider()
+
+        // Error feedback banner if any
+        val errText = feedback ?: localPickerError
+        if (!errText.isNullOrBlank()) {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
+            ) {
+                Text(
+                    text = errText,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(10.dp),
+                )
+            }
+        }
+
+        // 2. Virtualized LazyColumn Message Stream + Floating "Jump to Bottom" Pill
+        val highlightedMessageId = searchMatches.getOrNull(activeMatchCursor)?.messageId
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+        ) {
+            if (timelineItems.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(24.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "发送文字、图片、文件或语音开始协作。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    itemsIndexed(
+                        items = timelineItems,
+                        key = { _, item -> item.stableKey },
+                        contentType = { _, item -> item.contentType },
+                    ) { _, item ->
+                        when (item) {
+                            is VirtualizedChatTimelineItem.CommittedTurnItem -> {
+                                CommittedMessageBubble(
+                                    item = item,
+                                    searchHighlightQuery = searchQuery.trim().takeIf { isSearchOpen && it.isNotEmpty() },
+                                    isFocusedSearchMatch = item.message.id == highlightedMessageId,
+                                    onCopyCode = { code ->
+                                        copyTextToClipboard(context, code)
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    },
+                                    onCardAction = { cardId, actionId ->
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        onCardAction(cardId, actionId)
+                                    },
+                                    onOpenDeliverableId = onOpenDeliverableId,
+                                )
+                            }
+
+                            is VirtualizedChatTimelineItem.LiveStreamingTurnItem -> {
+                                LiveTurnStreamingBubble(
+                                    item = item,
+                                    onCopyCode = { code ->
+                                        copyTextToClipboard(context, code)
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    },
+                                    onCardAction = { cardId, actionId ->
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        onCardAction(cardId, actionId)
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (scrollAnchor.showJumpToBottomPill && timelineItems.isNotEmpty()) {
+                Button(
+                    onClick = {
+                        scrollAnchor = ChatScrollAnchorMachine.onUserJumpToBottom(
+                            previous = scrollAnchor,
+                            currentMessageCount = timelineItems.size,
+                        )
+                        scope.launch {
+                            listState.animateScrollToItem(timelineItems.lastIndex)
+                        }
+                    },
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 12.dp),
+                ) {
+                    val unreadSuffix = if (scrollAnchor.unreadCountWhilePaused > 0) {
+                        " · ${scrollAnchor.unreadCountWhilePaused} 条新消息"
+                    } else {
+                        ""
+                    }
+                    Text("↓ 回到底部$unreadSuffix")
+                }
+            }
+        }
+
+        HorizontalDivider()
+
+        // 3. Docked Bottom Composer Bar
+        Surface(
+            tonalElevation = 3.dp,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (stagedAttachments.isNotEmpty()) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        for (att in stagedAttachments) {
+                            AssistChip(
+                                onClick = {
+                                    stagedAttachments = stagedAttachments.filterNot { it.localId == att.localId }
+                                },
+                                label = {
+                                    Text("${att.fileName} (${formatByteSize(att.bytes.size.toLong())}) ×")
+                                },
+                            )
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    AssistChip(
+                        onClick = {
+                            localPickerError = null
+                            photoPickerLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        },
+                        label = { Text("+ 图片") },
+                    )
+                    AssistChip(
+                        onClick = {
+                            localPickerError = null
+                            documentPickerLauncher.launch(arrayOf("*/*"))
+                        },
+                        label = { Text("+ 文件") },
+                    )
+                    AssistChip(
+                        onClick = {
+                            localPickerError = null
+                            if (isRecording) {
+                                val rec = activeRecorder
+                                val outFile = activeRecordingFile
+                                activeRecorder = null
+                                activeRecordingFile = null
+                                try {
+                                    rec?.stop()
+                                    rec?.release()
+                                    if (outFile != null && outFile.exists() && outFile.length() > 0L) {
+                                        val voiceBytes = outFile.readBytes()
+                                        stagedAttachments = stagedAttachments + LocalUploadAttachment(
+                                            localId = "voice_${UUID.randomUUID()}",
+                                            fileName = outFile.name,
+                                            mimeType = "audio/mp4",
+                                            kind = AttachmentMediaKind.VOICE,
+                                            bytes = voiceBytes,
+                                        )
+                                    }
+                                } catch (err: Throwable) {
+                                    localPickerError = "完成录音失败：${err.message}"
+                                } finally {
+                                    outFile?.delete()
+                                }
+                            } else {
+                                val hasPerm = ContextCompat.checkSelfPermission(
+                                    context,
+                                    Manifest.permission.RECORD_AUDIO,
+                                ) == PackageManager.PERMISSION_GRANTED
+                                if (!hasPerm) {
+                                    audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                } else {
+                                    startVoiceRecording(context)
+                                        .onSuccess { (recorder, file) ->
+                                            activeRecorder = recorder
+                                            activeRecordingFile = file
+                                        }
+                                        .onFailure { err ->
+                                            localPickerError = "启动录音失败：${err.message}"
+                                        }
+                                }
+                            }
+                        },
+                        label = { Text(if (isRecording) "● 完成录音" else "+ 语音") },
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.Bottom,
+                ) {
+                    OutlinedTextField(
+                        value = inputDraft,
+                        onValueChange = { inputDraft = it },
+                        placeholder = {
+                            Text(if (isHostReachable) "发消息给 Agent…" else "离线输入（重连自动幂等发送）…")
+                        },
+                        maxLines = 5,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Button(
+                        onClick = {
+                            val prompt = inputDraft
+                            val files = stagedAttachments
+                            inputDraft = ""
+                            stagedAttachments = emptyList()
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            scrollAnchor = ChatScrollAnchorMachine.onUserJumpToBottom(
+                                previous = scrollAnchor,
+                                currentMessageCount = timelineItems.size + 1,
+                            )
+                            onSendPrompt(prompt, files)
+                        },
+                        enabled = inputDraft.isNotBlank() || stagedAttachments.isNotEmpty(),
+                    ) {
+                        Text(if (isHostReachable) "发送" else "入队")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HonestWorkingSubtitleRow(
+    agentLabel: String,
+    indicatorState: HonestWorkingIndicatorState,
+) {
+    when (indicatorState.phase) {
+        HonestWorkingPhase.WORKING -> {
+            val infinite = rememberInfiniteTransition(label = "working_pulse")
+            val pulseAlpha by infinite.animateFloat(
+                initialValue = 0.4f,
+                targetValue = 1.0f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(durationMillis = 850),
+                    repeatMode = RepeatMode.Reverse,
+                ),
+                label = "pulse_alpha",
+            )
+            Text(
+                text = "● $agentLabel · 正在执行中",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.alpha(pulseAlpha),
+            )
+        }
+
+        HonestWorkingPhase.RECENTLY_COMPLETED -> {
+            Text(
+                text = "✓ $agentLabel · 刚刚完成",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.secondary,
+            )
+        }
+
+        HonestWorkingPhase.OFFLINE -> {
+            Text(
+                text = "○ $agentLabel · 离线缓存模式",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        HonestWorkingPhase.IDLE_ONLINE -> {
+            Text(
+                text = "● $agentLabel · 在线就绪",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun BreathingStatusChip(label: String) {
+    val infinite = rememberInfiniteTransition(label = "chip_pulse")
+    val pulseAlpha by infinite.animateFloat(
+        initialValue = 0.5f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 900),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "chip_alpha",
+    )
+    Surface(
+        color = MaterialTheme.colorScheme.primaryContainer,
+        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier.alpha(pulseAlpha),
+    ) {
+        Text(
+            text = "● $label",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onPrimaryContainer,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+        )
+    }
+}
+
+/**
+ * Single-line low-noise progressive-disclosure capsule (`INV-2271`):
+ * Collapses `thinking` reasoning text and consecutive tool calls into a compact pill by default,
+ * expanding on tap to reveal the full reasoning and tool timeline.
+ */
+@Composable
+private fun ExpandableProcessDisclosurePillView(
+    pill: ProcessDisclosurePill,
+) {
+    var expanded by rememberSaveable(pill.id) { mutableStateOf(pill.defaultExpanded) }
+
+    val containerColor = when {
+        pill.isAwaitingApproval -> MaterialTheme.colorScheme.tertiaryContainer
+        pill.hasFailure -> MaterialTheme.colorScheme.errorContainer
+        else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f)
+    }
+    val contentColor = when {
+        pill.isAwaitingApproval -> MaterialTheme.colorScheme.onTertiaryContainer
+        pill.hasFailure -> MaterialTheme.colorScheme.onErrorContainer
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+
+    val pulseAlpha = if (pill.isLiveBreathing) {
+        val infinite = rememberInfiniteTransition(label = "pill_breathing")
+        val anim by infinite.animateFloat(
+            initialValue = 0.55f,
+            targetValue = 1.0f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 800),
+                repeatMode = RepeatMode.Reverse,
+            ),
+            label = "pill_alpha",
+        )
+        anim
+    } else {
+        1.0f
+    }
+
+    Surface(
+        color = containerColor,
+        shape = RoundedCornerShape(10.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = pill.hasDetails) { expanded = !expanded },
+    ) {
         Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .alpha(pulseAlpha),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(summary?.title ?: "会话 $conversationId", style = MaterialTheme.typography.titleMedium)
-                    summary?.let {
-                        Text("Agent：${it.agentName ?: it.agentId}", style = MaterialTheme.typography.bodySmall)
-                    }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (isTurnActive && isOnline) {
-                        Button(onClick = onStopTurn) {
-                            Text("停止 (Stop)")
-                        }
-                    }
-                    OutlinedButton(onClick = onBackToList) {
-                        Text("返回列表")
-                    }
-                }
-            }
-
-            val errText = feedback ?: localPickerError
-            if (!errText.isNullOrBlank()) {
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(
-                        text = errText,
-                        color = MaterialTheme.colorScheme.onErrorContainer,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(10.dp),
-                    )
-                }
-            }
-
-            if (messages.isEmpty() && liveTurn == null) {
-                Text("暂无消息，发送文字、图片、文件或语音开始协作。", style = MaterialTheme.typography.bodyMedium)
-            } else {
-                for (msg in messages) {
-                    HorizontalDivider()
-                    CommittedMessageBubble(
-                        message = msg,
-                        onCardAction = onCardAction,
-                        onOpenDeliverableId = onOpenDeliverableId,
-                    )
-                }
-            }
-
-            if (liveTurn != null) {
-                HorizontalDivider()
-                LiveTurnStreamingBubble(
-                    draft = liveTurn,
-                    onCardAction = onCardAction,
+                Text(
+                    text = pill.label,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = contentColor,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    text = if (expanded) "收起 ▾" else "详情 ▸",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = contentColor,
                 )
             }
 
-            HorizontalDivider()
-
-            // Staged attachments strip
-            if (stagedAttachments.isNotEmpty()) {
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    for (att in stagedAttachments) {
-                        AssistChip(
-                            onClick = {
-                                stagedAttachments = stagedAttachments.filterNot { it.localId == att.localId }
-                            },
-                            label = {
-                                Text("附件：${att.fileName} (${formatByteSize(att.bytes.size.toLong())}) ×")
-                            },
+            AnimatedVisibility(visible = expanded) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    HorizontalDivider()
+                    pill.thinkingText?.takeIf { it.isNotBlank() }?.let { thought ->
+                        Text(
+                            text = thought,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = contentColor,
                         )
                     }
+                    if (pill.toolCalls.isNotEmpty()) {
+                        ToolProgressTimeline(entries = pill.toolCalls)
+                    }
                 }
-            }
-
-            // Attachment & voice controls
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                OutlinedButton(
-                    onClick = {
-                        localPickerError = null
-                        photoPickerLauncher.launch(
-                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                        )
-                    },
-                ) {
-                    Text("+ 图片")
-                }
-                OutlinedButton(
-                    onClick = {
-                        localPickerError = null
-                        documentPickerLauncher.launch(arrayOf("*/*"))
-                    },
-                ) {
-                    Text("+ 文件")
-                }
-                OutlinedButton(
-                    onClick = {
-                        localPickerError = null
-                        if (isRecording) {
-                            val rec = activeRecorder
-                            val outFile = activeRecordingFile
-                            activeRecorder = null
-                            activeRecordingFile = null
-                            try {
-                                rec?.stop()
-                                rec?.release()
-                                if (outFile != null && outFile.exists() && outFile.length() > 0L) {
-                                    val voiceBytes = outFile.readBytes()
-                                    stagedAttachments = stagedAttachments + LocalUploadAttachment(
-                                        localId = "voice_${UUID.randomUUID()}",
-                                        fileName = outFile.name,
-                                        mimeType = "audio/mp4",
-                                        kind = AttachmentMediaKind.VOICE,
-                                        bytes = voiceBytes,
-                                    )
-                                }
-                            } catch (err: Throwable) {
-                                localPickerError = "完成录音失败：${err.message}"
-                            } finally {
-                                outFile?.delete()
-                            }
-                        } else {
-                            val hasPerm = ContextCompat.checkSelfPermission(
-                                context,
-                                Manifest.permission.RECORD_AUDIO,
-                            ) == PackageManager.PERMISSION_GRANTED
-                            if (!hasPerm) {
-                                audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                            } else {
-                                startVoiceRecording(context)
-                                    .onSuccess { (recorder, file) ->
-                                        activeRecorder = recorder
-                                        activeRecordingFile = file
-                                    }
-                                    .onFailure { err ->
-                                        localPickerError = "启动录音失败：${err.message}"
-                                    }
-                            }
-                        }
-                    },
-                ) {
-                    Text(if (isRecording) "结束录音并附加" else "+ 语音")
-                }
-            }
-
-            OutlinedTextField(
-                value = inputDraft,
-                onValueChange = { inputDraft = it },
-                placeholder = { Text("输入指令或补充说明（断网将加密入队并幂等重发）…") },
-                modifier = Modifier.fillMaxWidth(),
-            )
-
-            Button(
-                onClick = {
-                    val prompt = inputDraft
-                    val files = stagedAttachments
-                    inputDraft = ""
-                    stagedAttachments = emptyList()
-                    onSendPrompt(prompt, files)
-                },
-                enabled = inputDraft.isNotBlank() || stagedAttachments.isNotEmpty(),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(if (isOnline) "发送" else "离线幂等入队（恢复网络自动发送）")
             }
         }
     }
@@ -591,10 +1187,15 @@ private fun StreamingConversationDetailCard(
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun CommittedMessageBubble(
-    message: CommittedMessage,
+    item: VirtualizedChatTimelineItem.CommittedTurnItem,
+    searchHighlightQuery: String?,
+    isFocusedSearchMatch: Boolean,
+    onCopyCode: (String) -> Unit,
     onCardAction: (String, String) -> Unit,
     onOpenDeliverableId: (String) -> Unit,
 ) {
+    val message = item.message
+    val isUser = (message.role as? OpenEnum.Known)?.value == MessageRole.USER
     val roleLabel = when (val r = message.role) {
         is OpenEnum.Known -> when (r.value) {
             MessageRole.USER -> "我"
@@ -604,73 +1205,87 @@ private fun CommittedMessageBubble(
         is OpenEnum.Other -> r.rawValue
     }
 
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
+    val bubbleContainer = when {
+        isFocusedSearchMatch -> MaterialTheme.colorScheme.tertiaryContainer
+        isUser -> MaterialTheme.colorScheme.primaryContainer
+        else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+    }
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = if (isUser) Alignment.End else Alignment.Start,
+    ) {
+        Surface(
+            color = bubbleContainer,
+            shape = RoundedCornerShape(14.dp),
+            modifier = if (isUser) Modifier.widthIn(max = 320.dp) else Modifier.fillMaxWidth(),
         ) {
-            Text(roleLabel, style = MaterialTheme.typography.labelLarge)
-            Text(message.createdAt, style = MaterialTheme.typography.labelSmall)
-            if (message.pendingSend) {
-                AssistChip(
-                    onClick = {},
-                    enabled = false,
-                    label = { Text("待幂等同步") },
-                )
-            }
-        }
-
-        message.thinking?.takeIf { it.isNotBlank() }?.let { thought ->
-            Surface(
-                color = MaterialTheme.colorScheme.surfaceVariant,
-                shape = MaterialTheme.shapes.small,
-                modifier = Modifier.fillMaxWidth(),
+            Column(
+                modifier = Modifier.padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Column(modifier = Modifier.padding(10.dp)) {
-                    Text("思考过程", style = MaterialTheme.typography.labelSmall)
-                    Text(thought, style = MaterialTheme.typography.bodySmall)
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(roleLabel, style = MaterialTheme.typography.labelLarge)
+                    Text(
+                        message.createdAt,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (message.pendingSend) {
+                        Text(
+                            "待同步",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
                 }
-            }
-        }
 
-        if (message.toolCalls.isNotEmpty()) {
-            ToolProgressTimeline(entries = message.toolCalls)
-        }
+                // Single-line collapsed pill for thinking + tool runs (noise reduction)
+                item.processPill?.let { pill ->
+                    ExpandableProcessDisclosurePillView(pill = pill)
+                }
 
-        if (message.text.isNotBlank()) {
-            MarkdownRichContent(markdown = message.text)
-        }
-
-        if (message.attachments.isNotEmpty()) {
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                for (att in message.attachments) {
-                    AssistChip(
-                        onClick = {},
-                        enabled = false,
-                        label = {
-                            val sizeSuffix = att.sizeBytes?.let { " · ${formatByteSize(it)}" }.orEmpty()
-                            Text("${att.name} (${att.kind}$sizeSuffix)")
-                        },
+                if (message.text.isNotBlank()) {
+                    MarkdownRichContent(
+                        markdown = message.text,
+                        highlightQuery = searchHighlightQuery,
+                        onCopyCode = onCopyCode,
                     )
                 }
-            }
-        }
 
-        for (card in message.cards) {
-            ShowUiCardView(card = card, onCardAction = onCardAction)
-        }
+                // Fixed-aspect-ratio attachment cards to prevent layout shift
+                if (message.attachments.isNotEmpty()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        for (att in message.attachments) {
+                            val kind = AttachmentMediaKind.infer(att.kind, att.mimeType)
+                            val ratio = item.fixedAspectSkeletonRatios["att:${att.id}"]
+                                ?: ConversationNoiseReducer.defaultAspectRatioForAttachment(kind)
+                            FixedAspectAttachmentFrame(
+                                name = att.name,
+                                kind = kind,
+                                sizeBytes = att.sizeBytes,
+                                aspectRatio = ratio,
+                            )
+                        }
+                    }
+                }
 
-        if (message.deliverableIds.isNotEmpty()) {
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                for (delivId in message.deliverableIds) {
-                    OutlinedButton(onClick = { onOpenDeliverableId(delivId) }) {
-                        Text("预览交付物 $delivId")
+                for (card in message.cards) {
+                    ShowUiCardView(card = card, onCardAction = onCardAction)
+                }
+
+                // Inline deliverable cards with fixed-height preview frame
+                if (message.deliverableIds.isNotEmpty()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        for (delivId in message.deliverableIds) {
+                            InlineDeliverableCard(
+                                deliverableId = delivId,
+                                onOpenDeliverableId = onOpenDeliverableId,
+                            )
+                        }
                     }
                 }
             }
@@ -679,43 +1294,129 @@ private fun CommittedMessageBubble(
 }
 
 @Composable
+private fun FixedAspectAttachmentFrame(
+    name: String,
+    kind: AttachmentMediaKind,
+    sizeBytes: Long?,
+    aspectRatio: Float,
+) {
+    val sizeSuffix = sizeBytes?.let { " · ${formatByteSize(it)}" }.orEmpty()
+    if (kind == AttachmentMediaKind.IMAGE) {
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            shape = RoundedCornerShape(10.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 180.dp)
+                .aspectRatio(aspectRatio, matchHeightConstraintsFirst = false),
+        ) {
+            Box(
+                modifier = Modifier.padding(12.dp),
+                contentAlignment = Alignment.BottomStart,
+            ) {
+                Text(
+                    text = "图片附件 · $name$sizeSuffix",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    } else {
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(
+                text = "${if (kind == AttachmentMediaKind.VOICE) "语音" else "文件"} · $name$sizeSuffix",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun InlineDeliverableCard(
+    deliverableId: String,
+    onOpenDeliverableId: (String) -> Unit,
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        shape = RoundedCornerShape(10.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onOpenDeliverableId(deliverableId) },
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "交付物产物",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+                Text(
+                    deliverableId,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+            }
+            OutlinedButton(onClick = { onOpenDeliverableId(deliverableId) }) {
+                Text("预览")
+            }
+        }
+    }
+}
+
+@Composable
 private fun LiveTurnStreamingBubble(
-    draft: LiveTurnDraft,
+    item: VirtualizedChatTimelineItem.LiveStreamingTurnItem,
+    onCopyCode: (String) -> Unit,
     onCardAction: (String, String) -> Unit,
 ) {
+    val draft = item.draft
     Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        ),
+        shape = RoundedCornerShape(14.dp),
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column(
             modifier = Modifier.padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text(
-                if (draft.isRunning) "Agent 实时流式输出中…" else "本轮已停止",
-                style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.onSecondaryContainer,
-            )
-
-            if (draft.thinkingText.isNotBlank()) {
-                Surface(
-                    color = MaterialTheme.colorScheme.surface,
-                    shape = MaterialTheme.shapes.small,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Column(modifier = Modifier.padding(8.dp)) {
-                        Text("实时思考增量", style = MaterialTheme.typography.labelSmall)
-                        Text(draft.thinkingText, style = MaterialTheme.typography.bodySmall)
-                    }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Agent", style = MaterialTheme.typography.labelLarge)
+                if (item.showBreathingIndicator) {
+                    BreathingStatusChip(label = "生成中")
+                } else {
+                    Text(
+                        if (draft.isRunning) "连接中断 · 等待恢复" else "已停止",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
 
-            if (draft.toolCalls.isNotEmpty()) {
-                ToolProgressTimeline(entries = draft.toolCalls)
+            item.processPill?.let { pill ->
+                ExpandableProcessDisclosurePillView(pill = pill)
             }
 
             if (draft.responseText.isNotBlank()) {
-                MarkdownRichContent(markdown = draft.responseText)
+                MarkdownRichContent(
+                    markdown = draft.responseText,
+                    onCopyCode = onCopyCode,
+                )
             }
 
             for (card in draft.cards) {
@@ -732,7 +1433,7 @@ private fun ToolProgressTimeline(entries: List<ToolTimelineEntry>) {
             val statusBadge = when (val st = tool.status) {
                 is OpenEnum.Known -> when (st.value) {
                     ToolRunStatus.RUNNING -> "运行中"
-                    ToolRunStatus.COMPLETED -> "已完成"
+                    ToolRunStatus.COMPLETED -> "完成"
                     ToolRunStatus.FAILED -> "失败"
                     ToolRunStatus.AWAITING_APPROVAL -> "待审批"
                 }
@@ -740,7 +1441,7 @@ private fun ToolProgressTimeline(entries: List<ToolTimelineEntry>) {
             }
             val summarySuffix = tool.summary?.takeIf { it.isNotBlank() }?.let { " — $it" }.orEmpty()
             Text(
-                text = "[$statusBadge] 工具 ${tool.name}$summarySuffix",
+                text = "[$statusBadge] ${tool.name}$summarySuffix",
                 style = MaterialTheme.typography.bodySmall,
                 fontFamily = FontFamily.Monospace,
             )
@@ -755,7 +1456,7 @@ private fun ShowUiCardView(
     onCardAction: (String, String) -> Unit,
 ) {
     Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column(
@@ -783,9 +1484,14 @@ private fun ShowUiCardView(
 }
 
 @Composable
-fun MarkdownRichContent(markdown: String) {
+fun MarkdownRichContent(
+    markdown: String,
+    highlightQuery: String? = null,
+    onCopyCode: ((String) -> Unit)? = null,
+) {
+    val context = LocalContext.current
     val blocks = remember(markdown) { MarkdownBlockParser.parse(markdown) }
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         for (block in blocks) {
             when (block) {
                 is MarkdownBlock.Heading -> {
@@ -794,47 +1500,215 @@ fun MarkdownRichContent(markdown: String) {
                         2 -> MaterialTheme.typography.titleMedium
                         else -> MaterialTheme.typography.titleSmall
                     }
-                    Text(block.text, style = style)
+                    Text(
+                        text = highlightMatchesAnnotated(block.text, highlightQuery),
+                        style = style,
+                    )
                 }
 
                 is MarkdownBlock.Paragraph -> {
-                    Text(block.text, style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        text = highlightMatchesAnnotated(block.text, highlightQuery),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
                 }
 
                 is MarkdownBlock.BulletList -> {
-                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        for (item in block.items) {
-                            Text("• $item", style = MaterialTheme.typography.bodyMedium)
+                    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        for (bulletItem in block.items) {
+                            Text(
+                                text = highlightMatchesAnnotated("• $bulletItem", highlightQuery),
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
                         }
                     }
                 }
 
+                is MarkdownBlock.Table -> {
+                    InlineMarkdownTableView(headers = block.headers, rows = block.rows)
+                }
+
                 is MarkdownBlock.CodeFence -> {
-                    Surface(
-                        color = MaterialTheme.colorScheme.surfaceVariant,
-                        shape = MaterialTheme.shapes.small,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Column(modifier = Modifier.padding(10.dp)) {
-                            block.language?.let { lang ->
-                                Text(
-                                    lang,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontFamily = FontFamily.Monospace,
-                                )
-                                Spacer(modifier = Modifier.height(4.dp))
+                    SyntaxHighlightedCodeBlockView(
+                        language = block.language,
+                        code = block.code,
+                        onCopy = {
+                            if (onCopyCode != null) {
+                                onCopyCode(block.code)
+                            } else {
+                                copyTextToClipboard(context, block.code)
                             }
-                            Text(
-                                text = block.code,
-                                style = MaterialTheme.typography.bodySmall,
-                                fontFamily = FontFamily.Monospace,
-                            )
-                        }
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SyntaxHighlightedCodeBlockView(
+    language: String?,
+    code: String,
+    onCopy: () -> Unit,
+) {
+    var copiedRecently by remember { mutableStateOf(false) }
+    val spans = remember(code, language) { MarkdownBlockParser.tokenizeCode(code, language) }
+
+    LaunchedEffect(copiedRecently) {
+        if (copiedRecently) {
+            delay(1_800L)
+            copiedRecently = false
+        }
+    }
+
+    val keywordColor = MaterialTheme.colorScheme.primary
+    val stringColor = MaterialTheme.colorScheme.tertiary
+    val commentColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
+    val numberColor = MaterialTheme.colorScheme.secondary
+    val plainColor = MaterialTheme.colorScheme.onSurface
+
+    val highlightedCode = remember(spans, keywordColor, stringColor, commentColor, numberColor, plainColor) {
+        buildAnnotatedString {
+            for (span in spans) {
+                val style = when (span.kind) {
+                    CodeTokenKind.KEYWORD -> SpanStyle(color = keywordColor, fontWeight = FontWeight.SemiBold)
+                    CodeTokenKind.STRING -> SpanStyle(color = stringColor)
+                    CodeTokenKind.COMMENT -> SpanStyle(color = commentColor)
+                    CodeTokenKind.NUMBER -> SpanStyle(color = numberColor)
+                    CodeTokenKind.PLAIN -> SpanStyle(color = plainColor)
+                }
+                withStyle(style) {
+                    append(span.text)
+                }
+            }
+        }
+    }
+
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(10.dp),
+        tonalElevation = 1.dp,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = language ?: "code",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                TextButton(
+                    onClick = {
+                        copiedRecently = true
+                        onCopy()
+                    },
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                ) {
+                    Text(
+                        text = if (copiedRecently) "✓ 已复制" else "复制代码",
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(10.dp),
+            ) {
+                Text(
+                    text = highlightedCode,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun InlineMarkdownTableView(
+    headers: List<String>,
+    rows: List<List<String>>,
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(8.dp),
+        tonalElevation = 1.dp,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier
+                .horizontalScroll(rememberScrollState())
+                .padding(8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                for (header in headers) {
+                    Text(
+                        text = header,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.widthIn(min = 72.dp),
+                    )
+                }
+            }
+            HorizontalDivider()
+            for (row in rows) {
+                Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    headers.indices.forEach { colIdx ->
+                        Text(
+                            text = row.getOrNull(colIdx).orEmpty(),
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.widthIn(min = 72.dp),
+                        )
                     }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun highlightMatchesAnnotated(
+    text: String,
+    query: String?,
+): AnnotatedString {
+    val needle = query?.trim()?.takeIf { it.isNotEmpty() }
+    if (needle == null) return AnnotatedString(text)
+    val highlightBg = MaterialTheme.colorScheme.tertiaryContainer
+    val highlightFg = MaterialTheme.colorScheme.onTertiaryContainer
+    return buildAnnotatedString {
+        var cursor = 0
+        while (cursor < text.length) {
+            val matchIdx = text.indexOf(needle, startIndex = cursor, ignoreCase = true)
+            if (matchIdx < 0) {
+                append(text.substring(cursor))
+                break
+            }
+            if (matchIdx > cursor) {
+                append(text.substring(cursor, matchIdx))
+            }
+            withStyle(SpanStyle(background = highlightBg, color = highlightFg, fontWeight = FontWeight.SemiBold)) {
+                append(text.substring(matchIdx, matchIdx + needle.length))
+            }
+            cursor = matchIdx + needle.length
+        }
+    }
+}
+
+private fun copyTextToClipboard(context: Context, text: String) {
+    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
+    cm.setPrimaryClip(ClipData.newPlainText("code", text))
 }
 
 /**
