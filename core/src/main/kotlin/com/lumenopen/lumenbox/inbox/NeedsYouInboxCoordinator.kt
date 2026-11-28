@@ -161,6 +161,8 @@ class NeedsYouInboxCoordinator(
                 signatureBase64Url = proof.signatureBase64Url,
                 timestampEpochSeconds = challenge.timestampEpochSeconds,
                 nonceBase64Url = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(challenge.nonce),
+                assuranceLevel = proof.assuranceLevel?.rawValue,
+                challengeConfirmationCode = proof.challengeConfirmationCode,
             )
         } else {
             null

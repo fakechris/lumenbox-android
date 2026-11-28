@@ -72,6 +72,7 @@ data class ServerInstallationDescriptor(
     val mode: OpenEnum<InstallationMode>,
     val name: String? = null,
     val redactLockScreenNotifications: Boolean? = null,
+    val requireSystemScreenLock: Boolean? = null,
 )
 
 @Serializable
@@ -93,12 +94,40 @@ enum class ApprovalGrantScope(val wireName: String) {
     @SerialName("session") SESSION("session"),
 }
 
+enum class StepUpAssuranceLevel(val wireName: String) {
+    HARDWARE_BIOMETRIC("hardware_biometric"),
+    DEVICE_CREDENTIAL("device_credential"),
+    APP_EXPLICIT_CHALLENGE("app_explicit_challenge");
+
+    companion object {
+        fun fromWire(raw: String): OpenEnum<StepUpAssuranceLevel> {
+            val match = entries.firstOrNull { it.wireName == raw }
+            return if (match != null) OpenEnum.Known(match, raw) else OpenEnum.Other(raw)
+        }
+    }
+}
+
+object StepUpAssuranceLevelOpenSerializer : KSerializer<OpenEnum<StepUpAssuranceLevel>> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("OpenEnum.StepUpAssuranceLevel", PrimitiveKind.STRING)
+
+    override fun deserialize(decoder: Decoder): OpenEnum<StepUpAssuranceLevel> =
+        StepUpAssuranceLevel.fromWire(decoder.decodeString())
+
+    override fun serialize(encoder: Encoder, value: OpenEnum<StepUpAssuranceLevel>) {
+        encoder.encodeString(value.rawValue)
+    }
+}
+
 @Serializable
 data class StepUpProof(
     val keyId: String,
     val approvalId: String,
     val decision: String,
     val signatureBase64Url: String,
+    @Serializable(with = StepUpAssuranceLevelOpenSerializer::class)
+    val assuranceLevel: OpenEnum<StepUpAssuranceLevel>? = null,
+    val challengeConfirmationCode: String? = null,
 )
 
 /**

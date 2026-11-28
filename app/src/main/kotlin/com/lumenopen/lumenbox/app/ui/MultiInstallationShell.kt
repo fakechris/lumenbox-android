@@ -37,7 +37,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedTextField
+import com.lumenopen.lumenbox.app.security.ExplicitChallengeUiDialog
 import com.lumenopen.lumenbox.app.security.StepUpBiometricGateway
+import com.lumenopen.lumenbox.security.StepUpCancelledException
+import com.lumenopen.lumenbox.security.StepUpSecurityPolicy
+import kotlinx.coroutines.CompletableDeferred
 import com.lumenopen.lumenbox.auth.OAuthExchangeOutcome
 import com.lumenopen.lumenbox.contract.ApiEnvelopeException
 import com.lumenopen.lumenbox.conversation.ConversationAndBoardCoordinator
@@ -102,14 +108,51 @@ fun MultiInstallationShell(
     var globalBannerMessage by remember { mutableStateOf<String?>(null) }
     var routedOpenTarget by remember { mutableStateOf<OpenDeepLinkTarget?>(null) }
 
-    val biometricAuthenticator: StepUpChallengeAuthenticator? = remember(stepUpGateway, context) {
+    data class PendingExplicitChallenge(
+        val title: String,
+        val subtitle: String,
+        val expectedCode: String,
+        val deferred: CompletableDeferred<String>,
+    )
+    var pendingExplicitChallenge by remember { mutableStateOf<PendingExplicitChallenge?>(null) }
+
+    val explicitChallengeDialog = remember {
+        ExplicitChallengeUiDialog { title, subtitle, expectedCode ->
+            val deferred = CompletableDeferred<String>()
+            pendingExplicitChallenge = PendingExplicitChallenge(title, subtitle, expectedCode, deferred)
+            try {
+                deferred.await()
+            } finally {
+                pendingExplicitChallenge = null
+            }
+        }
+    }
+
+    val personalStepUpAuthenticator: StepUpChallengeAuthenticator? = remember(stepUpGateway, context) {
         stepUpGateway?.let { gw ->
             StepUpChallengeAuthenticator { challenge, item ->
-                gw.signWithBiometric(
+                gw.signWithStepUp(
                     context = context,
                     title = "高危工具审批验证",
                     subtitle = "${item.toolName}：${item.summary}",
                     challenge = challenge,
+                    policy = StepUpSecurityPolicy.PERSONAL_DEFAULT,
+                    explicitDialog = explicitChallengeDialog,
+                )
+            }
+        }
+    }
+
+    val organisationStepUpAuthenticator: StepUpChallengeAuthenticator? = remember(stepUpGateway, context) {
+        stepUpGateway?.let { gw ->
+            StepUpChallengeAuthenticator { challenge, item ->
+                gw.signWithStepUp(
+                    context = context,
+                    title = "高危工具审批验证",
+                    subtitle = "${item.toolName}：${item.summary}",
+                    challenge = challenge,
+                    policy = StepUpSecurityPolicy.ORGANISATION_DEFAULT,
+                    explicitDialog = explicitChallengeDialog,
                 )
             }
         }
@@ -303,12 +346,12 @@ fun MultiInstallationShell(
                                 },
                             )
                         } else if (selectedProjection.kind == InstallationConnection.Kind.PERSONAL_MAC) {
-                            val inboxCoordinator = remember(selectedProjection.installationId, biometricAuthenticator) {
+                            val inboxCoordinator = remember(selectedProjection.installationId, personalStepUpAuthenticator) {
                                 NeedsYouInboxCoordinator(
                                     connectionId = selectedProjection.installationId,
                                     store = store,
                                     transportProvider = { personalCoordinator.activeApiTransport() },
-                                    stepUpAuthenticator = biometricAuthenticator,
+                                    stepUpAuthenticator = personalStepUpAuthenticator,
                                 )
                             }
                             val conversationCoordinator = remember(selectedProjection.installationId) {
@@ -373,14 +416,14 @@ fun MultiInstallationShell(
                                 },
                             )
                         } else {
-                            val inboxCoordinator = remember(selectedProjection.installationId, biometricAuthenticator) {
+                            val inboxCoordinator = remember(selectedProjection.installationId, organisationStepUpAuthenticator) {
                                 NeedsYouInboxCoordinator(
                                     connectionId = selectedProjection.installationId,
                                     store = store,
                                     transportProvider = {
                                         organisationCoordinator.transportForOrganisation(selectedProjection.installationId)
                                     },
-                                    stepUpAuthenticator = biometricAuthenticator,
+                                    stepUpAuthenticator = organisationStepUpAuthenticator,
                                 )
                             }
                             val conversationCoordinator = remember(selectedProjection.installationId) {
@@ -426,6 +469,49 @@ fun MultiInstallationShell(
                 }
             }
         }
+    }
+
+    pendingExplicitChallenge?.let { prompt ->
+        var typedCode by remember(prompt.expectedCode) { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = {
+                prompt.deferred.completeExceptionally(StepUpCancelledException("User dismissed explicit challenge"))
+            },
+            title = { Text(prompt.title) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(prompt.subtitle, style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "当前手机未开启系统锁屏，请输入下方两位防误触确认码（${prompt.expectedCode}）以放行高危操作：",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    OutlinedTextField(
+                        value = typedCode,
+                        onValueChange = { typedCode = it.take(2) },
+                        singleLine = true,
+                        label = { Text("输入 ${prompt.expectedCode}") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { prompt.deferred.complete(typedCode) },
+                    enabled = typedCode.length == 2,
+                ) {
+                    Text("确认放行")
+                }
+            },
+            dismissButton = {
+                OutlinedButton(
+                    onClick = {
+                        prompt.deferred.completeExceptionally(StepUpCancelledException("User cancelled explicit challenge"))
+                    },
+                ) {
+                    Text("取消")
+                }
+            },
+        )
     }
 }
 

@@ -44,7 +44,9 @@ import com.lumenopen.lumenbox.contract.InboxDecisionItem
 import com.lumenopen.lumenbox.inbox.NeedsYouInboxCoordinator
 import com.lumenopen.lumenbox.inbox.ToolApprovalDecision
 import com.lumenopen.lumenbox.inbox.WorkResolutionKind
+import com.lumenopen.lumenbox.app.security.DeviceAuthCapabilityProbe
 import com.lumenopen.lumenbox.security.StepUpCancelledException
+import com.lumenopen.lumenbox.security.StepUpScreenLockRequiredException
 import kotlinx.coroutines.launch
 
 /**
@@ -68,19 +70,25 @@ fun NeedsYouInboxSection(
     onAccessRemoved: (() -> Unit)? = null,
 ) {
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     var activeSecretPrompt by remember { mutableStateOf<InboxDecisionItem.SecretPrompt?>(null) }
     var actionFeedback by remember { mutableStateOf<String?>(null) }
+    var showEnrollScreenLockCta by remember { mutableStateOf(false) }
     var busyItemId by remember { mutableStateOf<String?>(null) }
 
     fun executeDecision(itemId: String, block: suspend () -> Unit) {
         busyItemId = itemId
         actionFeedback = null
+        showEnrollScreenLockCta = false
         scope.launch {
             try {
                 block()
                 onItemsChanged(coordinator.readCachedItems())
             } catch (_: StepUpCancelledException) {
-                actionFeedback = "已取消生物识别确认，审批未发送。"
+                actionFeedback = "已取消身份验证，审批未发送。"
+            } catch (err: StepUpScreenLockRequiredException) {
+                actionFeedback = err.message
+                showEnrollScreenLockCta = true
             } catch (err: ApiEnvelopeException) {
                 if (err.envelope.isAccessRemoved) {
                     onAccessRemoved?.invoke()
@@ -143,12 +151,27 @@ fun NeedsYouInboxSection(
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Text(
-                        text = msg,
-                        color = MaterialTheme.colorScheme.onErrorContainer,
-                        style = MaterialTheme.typography.bodySmall,
+                    Column(
                         modifier = Modifier.padding(10.dp),
-                    )
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(
+                            text = msg,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        if (showEnrollScreenLockCta) {
+                            OutlinedButton(
+                                onClick = {
+                                    runCatching {
+                                        context.startActivity(DeviceAuthCapabilityProbe.buildEnrollScreenLockIntent())
+                                    }
+                                },
+                            ) {
+                                Text("前往系统设置启用锁屏密码 / 指纹")
+                            }
+                        }
+                    }
                 }
             }
 
@@ -291,7 +314,7 @@ private fun ToolApprovalCard(
                 onClick = { onDecision(ToolApprovalDecision.Allow(ApprovalGrantScope.ONCE)) },
                 enabled = !busy,
             ) {
-                Text(if (item.stepUpRequired) "指纹/面容验证 · 允许一次" else "允许一次 (once)")
+                Text(if (item.stepUpRequired) "验证身份 · 允许一次" else "允许一次 (once)")
             }
             OutlinedButton(
                 onClick = { onDecision(ToolApprovalDecision.Allow(ApprovalGrantScope.SESSION)) },
