@@ -507,7 +507,9 @@
           "decision": { "type": "string" },
           "timestampEpochSeconds": { "type": "integer", "format": "int64" },
           "nonceBase64Url": { "type": "string" },
-          "signatureBase64Url": { "type": "string" }
+          "signatureBase64Url": { "type": "string" },
+          "assuranceLevel": { "type": "string" },
+          "challengeConfirmationCode": { "type": "string" }
         }
       },
       "GeneratedApprovalDecisionRequest": {
