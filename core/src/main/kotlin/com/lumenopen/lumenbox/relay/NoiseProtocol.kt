@@ -1,7 +1,7 @@
 package com.lumenopen.lumenbox.relay
 
 import com.lumenopen.lumenbox.crypto.ChaCha20Poly1305
-import java.math.BigInteger
+import org.bouncycastle.math.ec.rfc7748.X25519 as BcX25519
 import java.net.URI
 import java.net.URLDecoder
 import java.nio.ByteBuffer
@@ -39,14 +39,13 @@ data class X25519Keypair(val privateKey: ByteArray, val publicKey: ByteArray) {
 }
 
 /**
- * Pure RFC 7748 X25519 Montgomery ladder + canonical & low-order point validator (`docs/110 §3.2`).
- * Identical across OpenJDK 17 and all Android API levels without JCA provider differences.
+ * X25519 (RFC 7748) for Noise: the scalar multiplication is BouncyCastle's constant-time
+ * `org.bouncycastle.math.ec.rfc7748.X25519` (no secret-dependent branches or variable-time bignum
+ * arithmetic; it runs the same on OpenJDK and on every Android API level). This object adds the
+ * checks Noise needs on top: canonical, non-low-order peer keys and a non-zero shared secret
+ * (`docs/110 §3.2`, INV-2291).
  */
 object X25519Curve {
-    private val P: BigInteger = BigInteger.ONE.shiftLeft(255).subtract(BigInteger.valueOf(19))
-    private val A24: BigInteger = BigInteger.valueOf(121665)
-    private val BASE_POINT_LE: ByteArray = ByteArray(32).apply { this[0] = 9 }
-
     private val FIELD_PRIME_LE: ByteArray = hexToBytes(
         "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f"
     )
@@ -84,8 +83,26 @@ object X25519Curve {
         return out
     }
 
-    fun scalarMultBase(privateKeySeed: ByteArray): ByteArray =
-        rawLadder(clampScalar(privateKeySeed), BASE_POINT_LE)
+    /** The public key for a 32-byte private seed (clamped as RFC 7748 §5 requires). */
+    fun scalarMultBase(privateKeySeed: ByteArray): ByteArray {
+        if (privateKeySeed.size != 32) {
+            throw NoiseRelayException("invalid_key_length", "Private key must be 32 bytes")
+        }
+        val out = ByteArray(32)
+        BcX25519.scalarMultBase(privateKeySeed, 0, out, 0)
+        return out
+    }
+
+    /**
+     * Raw RFC 7748 X25519(k, u) for any 32-byte u, without the Noise checks (used for the RFC's
+     * vectors). Noise code calls [diffieHellman], which refuses bad peer keys and zero secrets.
+     */
+    fun scalarMult(scalar: ByteArray, uPoint: ByteArray): ByteArray {
+        require(scalar.size == 32 && uPoint.size == 32) { "X25519 inputs must be 32 bytes" }
+        val out = ByteArray(32)
+        BcX25519.scalarMult(scalar, 0, uPoint, 0, out, 0)
+        return out
+    }
 
     fun diffieHellman(privateKeySeed: ByteArray, peerPublicKey: ByteArray): ByteArray {
         if (privateKeySeed.size != 32) {
@@ -94,79 +111,11 @@ object X25519Curve {
         if (!isCanonicalPublicKey(peerPublicKey)) {
             throw NoiseRelayException("invalid_public_key", "Non-canonical or low-order X25519 public key")
         }
-        val shared = rawLadder(clampScalar(privateKeySeed), peerPublicKey)
-        var nonZero = 0
-        for (b in shared) nonZero = nonZero or (b.toInt() and 0xff)
-        if (nonZero == 0) {
+        val shared = ByteArray(32)
+        if (!BcX25519.calculateAgreement(privateKeySeed, 0, peerPublicKey, 0, shared, 0)) {
             throw NoiseRelayException("low_order_shared_secret", "All-zero X25519 shared secret")
         }
         return shared
-    }
-
-    private fun decodeLittleEndian(le: ByteArray): BigInteger {
-        val be = ByteArray(le.size + 1)
-        for (i in le.indices) {
-            be[be.size - 1 - i] = le[i]
-        }
-        return BigInteger(be)
-    }
-
-    private fun encodeLittleEndian32(v: BigInteger): ByteArray {
-        val mod = v.mod(P)
-        val be = mod.toByteArray()
-        val out = ByteArray(32)
-        var outIdx = 0
-        for (i in be.indices.reversed()) {
-            if (outIdx >= 32) break
-            out[outIdx++] = be[i]
-        }
-        return out
-    }
-
-    private fun rawLadder(clampedScalarLE: ByteArray, uPointLE: ByteArray): ByteArray {
-        val uClean = uPointLE.copyOf()
-        uClean[31] = (uClean[31].toInt() and 0x7f).toByte()
-        val k = decodeLittleEndian(clampedScalarLE)
-        val x1 = decodeLittleEndian(uClean).mod(P)
-
-        var x2 = BigInteger.ONE
-        var z2 = BigInteger.ZERO
-        var x3 = x1
-        var z3 = BigInteger.ONE
-        var swap = 0
-
-        for (t in 254 downTo 0) {
-            val kt = if (k.testBit(t)) 1 else 0
-            swap = swap xor kt
-            if (swap == 1) {
-                val tx = x2; x2 = x3; x3 = tx
-                val tz = z2; z2 = z3; z3 = tz
-            }
-            swap = kt
-
-            val a = x2.add(z2).mod(P)
-            val aa = a.multiply(a).mod(P)
-            val b = x2.subtract(z2).mod(P)
-            val bb = b.multiply(b).mod(P)
-            val e = aa.subtract(bb).mod(P)
-            val c = x3.add(z3).mod(P)
-            val d = x3.subtract(z3).mod(P)
-            val da = d.multiply(a).mod(P)
-            val cb = c.multiply(b).mod(P)
-            val sum = da.add(cb).mod(P)
-            val diff = da.subtract(cb).mod(P)
-            x3 = sum.multiply(sum).mod(P)
-            z3 = x1.multiply(diff.multiply(diff).mod(P)).mod(P)
-            x2 = aa.multiply(bb).mod(P)
-            z2 = e.multiply(aa.add(A24.multiply(e).mod(P)).mod(P)).mod(P)
-        }
-
-        if (swap == 1) {
-            x2 = x3
-            z2 = z3
-        }
-        val zInv = z2.modPow(P.subtract(BigInteger.valueOf(2)), P) // BigInteger.TWO is absent below Android API 33
-        return encodeLittleEndian32(x2.multiply(zInv).mod(P))
     }
 
     private fun hexToBytes(hex: String): ByteArray {
@@ -186,6 +135,11 @@ class NoiseCipherState(keyBytes: ByteArray? = null) {
     private var nonceCounter: Long = 0L // unsigned 64-bit counter up to MAX_UNSIGNED - 1
 
     val hasKey: Boolean get() = key != null
+
+    /** Noise `SetNonce`: tests reach the end of the nonce space without 2^64 encryptions. */
+    internal fun setNonce(nonce: Long) {
+        nonceCounter = nonce
+    }
 
     private fun nextNonceBytes(counter: Long): ByteArray {
         if (java.lang.Long.compareUnsigned(counter, -2L) > 0) {
@@ -242,6 +196,9 @@ internal class NoiseSymmetricState(protocolName: String) {
         }
         ck = h.copyOf()
     }
+
+    /** The handshake hash `h` (Noise §5.2 `GetHandshakeHash`). */
+    fun handshakeHash(): ByteArray = h.copyOf()
 
     fun mixHash(data: ByteArray) {
         val md = MessageDigest.getInstance("SHA-256")
@@ -301,6 +258,13 @@ object NoiseHandshakes {
         private val staticKeypair: X25519Keypair?,
     ) {
         private var completed = false
+
+        /** Noise's handshake hash once message 2 has been processed (channel binding, test vectors). */
+        val handshakeHash: ByteArray
+            get() {
+                if (!completed) throw NoiseRelayException("handshake_order", "Handshake not complete")
+                return symmetric.handshakeHash()
+            }
 
         fun completeMessage2(message2: ByteArray): Pair<ByteArray, NoiseTransportSession> {
             if (completed) {
