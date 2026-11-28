@@ -14,8 +14,30 @@ Supports both **Personal mode** (one paired Mac over direct LAN/tailnet or untru
 ## Verification
 
 ```bash
-./gradlew :core:test
+./gradlew :core:test                      # JVM unit tests (OpenJDK's crypto providers)
+./gradlew :app:connectedDebugAndroidTest  # instrumented tests on a running emulator or device
 ```
+
+`:core` runs on the JVM in unit tests but on Android's providers (Conscrypt) and Android's
+`java.*` in the app, and the two differ: OpenJDK's `ChaCha20-Poly1305` name is unknown on API 28,
+and JDK APIs such as `BigInteger.TWO` are absent below API 33. The instrumented tests in
+`app/src/androidTest` (the crypto is in `:core`, a plain JVM module without an Android test source
+set) run the shared AEAD against RFC 8439, the Noise NK / IK handshakes against the server's vectors
+(`core/src/test/resources/relay-test-vectors.json`), and the offline cache through close and reopen.
+
+To run them locally on a headless emulator (an AVD of your own; API 28 is `minSdk`):
+
+```bash
+sdkmanager "system-images;android-28;default;arm64-v8a"   # x86_64 on an Intel host
+avdmanager create avd -n lbx-test-28 -k "system-images;android-28;default;arm64-v8a"
+emulator -avd lbx-test-28 -no-window -no-audio -no-boot-anim -no-snapshot &
+adb wait-for-device
+./gradlew :app:connectedDebugAndroidTest
+adb emu kill && avdmanager delete avd -n lbx-test-28
+```
+
+CI runs the same task on API 28 and API 33 emulators (`instrumented` job in
+`.github/workflows/ci.yml`).
 
 ## License
 

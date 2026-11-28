@@ -1,5 +1,6 @@
 package com.lumenopen.lumenbox.relay
 
+import com.lumenopen.lumenbox.crypto.ChaCha20Poly1305
 import java.math.BigInteger
 import java.net.URI
 import java.net.URLDecoder
@@ -164,7 +165,7 @@ object X25519Curve {
             x2 = x3
             z2 = z3
         }
-        val zInv = z2.modPow(P.subtract(BigInteger.TWO), P)
+        val zInv = z2.modPow(P.subtract(BigInteger.valueOf(2)), P) // BigInteger.TWO is absent below Android API 33
         return encodeLittleEndian32(x2.multiply(zInv).mod(P))
     }
 
@@ -180,7 +181,7 @@ object X25519Curve {
 class NoiseCipherState(keyBytes: ByteArray? = null) {
     private val key: SecretKeySpec? = keyBytes?.let {
         require(it.size == 32) { "ChaCha20-Poly1305 key must be 32 bytes" }
-        SecretKeySpec(it.copyOf(), "ChaCha20")
+        SecretKeySpec(it.copyOf(), ChaCha20Poly1305.KEY_ALGORITHM)
     }
     private var nonceCounter: Long = 0L // unsigned 64-bit counter up to MAX_UNSIGNED - 1
 
@@ -200,7 +201,7 @@ class NoiseCipherState(keyBytes: ByteArray? = null) {
         val secret = key ?: return plaintext.copyOf()
         val iv = nextNonceBytes(nonceCounter)
         nonceCounter += 1L
-        val cipher = Cipher.getInstance("ChaCha20-Poly1305")
+        val cipher = ChaCha20Poly1305.newCipher()
         cipher.init(Cipher.ENCRYPT_MODE, secret, IvParameterSpec(iv))
         if (ad.isNotEmpty()) cipher.updateAAD(ad)
         return cipher.doFinal(plaintext)
@@ -213,7 +214,7 @@ class NoiseCipherState(keyBytes: ByteArray? = null) {
         }
         val iv = nextNonceBytes(nonceCounter)
         return try {
-            val cipher = Cipher.getInstance("ChaCha20-Poly1305")
+            val cipher = ChaCha20Poly1305.newCipher()
             cipher.init(Cipher.DECRYPT_MODE, secret, IvParameterSpec(iv))
             if (ad.isNotEmpty()) cipher.updateAAD(ad)
             val plain = cipher.doFinal(ciphertext)

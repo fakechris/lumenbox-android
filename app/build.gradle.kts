@@ -27,6 +27,7 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
@@ -66,6 +67,10 @@ android {
     buildFeatures {
         compose = true
     }
+
+    // The crypto lives in `:core`, a plain JVM module that cannot carry an Android test source set,
+    // so its on-device checks run here against the same code and the same server vectors (INV-2290).
+    sourceSets.getByName("androidTest").assets.srcDir(rootProject.file("core/src/test/resources"))
 }
 
 dependencies {
@@ -81,4 +86,7 @@ dependencies {
     implementation(libs.androidx.camera.lifecycle)
     implementation(libs.androidx.camera.view)
     implementation(libs.androidx.work.runtime.ktx)
+
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.ext.junit)
 }
