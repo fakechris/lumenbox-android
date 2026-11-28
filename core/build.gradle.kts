@@ -2,6 +2,7 @@ plugins {
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.openapi.generator)
+    alias(libs.plugins.animalsniffer)
 }
 
 java {
@@ -16,12 +17,15 @@ dependencies {
     api(libs.zxing.core)
     implementation(libs.bouncycastle.bcprov)
 
+    signature(variantOf(libs.gummy.bears.api28) { artifactType("signature") })
+
     testImplementation(libs.junit.jupiter)
     testImplementation(libs.kotlinx.coroutines.test)
     testRuntimeOnly(libs.junit.platform.launcher)
 }
 
 tasks.test {
+    dependsOn(tasks.named("animalsnifferMain"))
     useJUnitPlatform()
     systemProperty("junit.jupiter.execution.timeout.default", "15s")
 }
@@ -58,4 +62,11 @@ kotlin.sourceSets.named("main") {
 
 tasks.named("compileKotlin") {
     dependsOn(tasks.named("openApiGenerate"))
+}
+
+// `:core` compiles against JDK 17 but runs on Android's java.* from minSdk 28, where JDK APIs
+// such as URLDecoder.decode(String, Charset) or BigInteger.TWO do not exist (INV-2290, INV-2293).
+// The Gummy Bears signature is the Android API 28 surface; any call outside it fails the build.
+animalsniffer {
+    sourceSets = listOf(project.sourceSets["main"])
 }

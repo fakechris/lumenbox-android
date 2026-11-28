@@ -502,8 +502,8 @@ data class ParsedPairingOffer(
             for (pair in fragment.split("&")) {
                 val idx = pair.indexOf('=')
                 if (idx <= 0) continue
-                val k = URLDecoder.decode(pair.substring(0, idx), StandardCharsets.UTF_8)
-                val v = URLDecoder.decode(pair.substring(idx + 1), StandardCharsets.UTF_8)
+                val k = URLDecoder.decode(pair.substring(0, idx), StandardCharsets.UTF_8.name())
+                val v = URLDecoder.decode(pair.substring(idx + 1), StandardCharsets.UTF_8.name())
                 params.getOrPut(k) { mutableListOf() }.add(v)
             }
             val hostPubB64 = params["hostPub"]?.firstOrNull()

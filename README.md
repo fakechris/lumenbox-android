@@ -36,6 +36,11 @@ adb wait-for-device
 adb emu kill && avdmanager delete avd -n lbx-test-28
 ```
 
+`./gradlew :core:test` first runs `:core:animalsnifferMain`, which checks `:core`'s bytecode
+against the Android API 28 surface (the Gummy Bears signature, `com.toasttab.android:gummy-bears-api-28`)
+and fails the build on any JDK call that `minSdk` does not have, such as `BigInteger.TWO` or
+`URLDecoder.decode(String, Charset)`. If it fires, use the older overload; do not raise the check.
+
 CI runs the same task on API 28 and API 33 emulators (`instrumented` job in
 `.github/workflows/ci.yml`).
 
