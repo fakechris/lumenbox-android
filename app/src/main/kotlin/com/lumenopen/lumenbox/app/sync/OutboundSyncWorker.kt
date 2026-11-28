@@ -16,6 +16,7 @@ import com.lumenopen.lumenbox.auth.OrganisationTokenManager
 import com.lumenopen.lumenbox.auth.PkceOAuthClient
 import com.lumenopen.lumenbox.contract.ApiEnvelopeException
 import com.lumenopen.lumenbox.conversation.ConversationAndBoardCoordinator
+import com.lumenopen.lumenbox.conversation.LightManagementCoordinator
 import com.lumenopen.lumenbox.inbox.NeedsYouInboxCoordinator
 import com.lumenopen.lumenbox.relay.WebSocketRelayConnector
 import com.lumenopen.lumenbox.session.OrganisationSessionCoordinator
@@ -112,12 +113,20 @@ class OutboundSyncWorker(
                     store = store,
                     transportProvider = { transport },
                 )
+                val lightManagementCoordinator = LightManagementCoordinator(
+                    connectionId = conn.id,
+                    store = store,
+                    transportProvider = { transport },
+                )
 
                 inboxCoordinator.flushPendingDecisions()
+                lightManagementCoordinator.flushPendingConversationCreations()
                 conversationCoordinator.flushPendingConversationsQueue()
                 conversationCoordinator.syncDurableChanges()
 
-                if (conversationCoordinator.pendingPromptCount() > 0) {
+                if (conversationCoordinator.pendingPromptCount() > 0 ||
+                    lightManagementCoordinator.pendingCreateConversationCount() > 0
+                ) {
                     shouldRetry = true
                 }
             } catch (err: ApiEnvelopeException) {
