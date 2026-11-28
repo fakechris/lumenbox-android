@@ -7,6 +7,7 @@ import com.google.zxing.PlanarYUVLuminanceSource
 import com.google.zxing.ReaderException
 import com.google.zxing.common.GlobalHistogramBinarizer
 import com.google.zxing.common.HybridBinarizer
+import com.google.zxing.multi.qrcode.QRCodeMultiReader
 import com.google.zxing.qrcode.QRCodeReader
 import com.lumenopen.lumenbox.relay.NoiseRelayException
 import com.lumenopen.lumenbox.relay.ParsedPairingOffer
@@ -25,6 +26,10 @@ sealed interface QrScanOutcome {
  *   requiring zero Google Play Services so domestic and enterprise air-gapped Android phones work identically.
  * - Tries `HybridBinarizer` first, falling back to `GlobalHistogramBinarizer` when high-density QR modules
  *   are small relative to 8x8 local block thresholds.
+ * - Some valid pairing codes (2-5 % by payload, all Version 8) carry a finder-like 1:1:3:1:1 block in their data
+ *   area. ZXing's single-candidate detector stops scanning once it has three consistent candidates and
+ *   picks that block instead of the real bottom-left finder. `QRCodeMultiReader` tries every candidate
+ *   triple, so it is the second tier; it works on camera frames, unlike `PURE_BARCODE` (INV-2302).
  * - Enforces `#fragment`-only `lumenbox://pair#...` validation and rejects query-string leaks or expired codes.
  */
 object PairingQrDecoder {
@@ -32,12 +37,6 @@ object PairingQrDecoder {
         DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE),
         DecodeHintType.CHARACTER_SET to "UTF-8",
         DecodeHintType.TRY_HARDER to true,
-    )
-
-    private val pureGridHints: Map<DecodeHintType, Any> = mapOf(
-        DecodeHintType.POSSIBLE_FORMATS to listOf(BarcodeFormat.QR_CODE),
-        DecodeHintType.CHARACTER_SET to "UTF-8",
-        DecodeHintType.PURE_BARCODE to true,
     )
 
     fun evaluateDecodedText(
@@ -93,11 +92,22 @@ object PairingQrDecoder {
             false,
         )
         val reader = QRCodeReader()
-        val decodedText = tryDecodeBitmap(reader, BinaryBitmap(HybridBinarizer(source)), hints)
+        val hybrid = BinaryBitmap(HybridBinarizer(source))
+        val decodedText = tryDecodeBitmap(reader, hybrid, hints)
+            ?: tryDecodeAnyCandidate(hybrid)
             ?: tryDecodeBitmap(reader, BinaryBitmap(GlobalHistogramBinarizer(source)), hints)
-            ?: tryDecodeBitmap(reader, BinaryBitmap(GlobalHistogramBinarizer(source)), pureGridHints)
             ?: return QrScanOutcome.NoQrFound
         return evaluateDecodedText(decodedText, nowEpochMillis)
+    }
+
+    /** Every finder-pattern triple, not just the first three that agree; a pairing code is preferred. */
+    private fun tryDecodeAnyCandidate(bitmap: BinaryBitmap): String? {
+        val texts = try {
+            QRCodeMultiReader().decodeMultiple(bitmap, hints).map { it.text }
+        } catch (_: ReaderException) {
+            return null
+        }
+        return texts.firstOrNull { it.trim().lowercase().startsWith("lumenbox://") } ?: texts.firstOrNull()
     }
 
     private fun tryDecodeBitmap(

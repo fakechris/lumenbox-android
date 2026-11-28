@@ -118,9 +118,12 @@ class PersonalPairingAndShellTest {
         val unrelated = PairingQrDecoder.evaluateDecodedText("https://example.org/welcome")
         assertTrue(unrelated is QrScanOutcome.IgnoredNonLumenBox)
 
-        // Verify 200 consecutive random X25519 keypairs decode cleanly on 280x280 Y-plane across binarizer & pure-grid fallbacks (INV-2300)
-        repeat(200) { round ->
-            val rndKp = X25519Keypair.generate()
+        // 500 seeded keys on a 280x280 Y-plane. Ten of these codes (seeds 10, 35, 38, 50, 55, ...) have a
+        // finder-like block in their data that ZXing's single-candidate detector picks over the real
+        // bottom-left finder; the multi-candidate tier must decode every one (INV-2302). Seeded, so a
+        // failure names the seed that reproduces it.
+        repeat(500) { round ->
+            val rndKp = X25519Keypair.fromPrivateSeed(kotlin.random.Random(round).nextBytes(32))
             val rndUri = "lumenbox://pair#hostPub=${b64Encoder.encodeToString(rndKp.publicKey)}" +
                 "&relay=wss%3A%2F%2Frelay.lumenbox.com&route=rt_rnd_$round" +
                 "&pairSecret=${b64Encoder.encodeToString(pairSecret)}&exp=$validExpSec"
@@ -133,7 +136,7 @@ class PersonalPairingAndShellTest {
                 }
             }
             val rndOutcome = PairingQrDecoder.decodeYPlane(smallY, 280, 280, smallStride, nowMillis)
-            assertTrue(rndOutcome is QrScanOutcome.ValidOffer, "Round $round failed to decode high-density QR")
+            assertTrue(rndOutcome is QrScanOutcome.ValidOffer, "Seed $round failed to decode high-density QR")
         }
     }
 
