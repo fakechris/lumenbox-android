@@ -86,7 +86,7 @@ object ComposerLexicalTriggerParser {
      * - `/` skill trigger only activates at the start of the composer (ignoring leading spaces)
      *   so URLs like `https://example.com/foo` or file paths never false-trigger the skill drawer.
      * - `@` mention trigger activates at start-of-input or after whitespace / punctuation,
-     *   avoiding email addresses (`alice@domain.com` where `@` is preceded by an identifier char).
+     *   avoiding email addresses (`alice@example.com` where `@` is preceded by an identifier char).
      */
     fun detect(text: String, cursorIndex: Int = text.length): ComposerLexicalTrigger? {
         if (text.isEmpty()) return null
