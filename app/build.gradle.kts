@@ -71,6 +71,7 @@ android {
     // The crypto lives in `:core`, a plain JVM module that cannot carry an Android test source set,
     // so its on-device checks run here against the same code and the same server vectors (INV-2290).
     sourceSets.getByName("androidTest").assets.srcDir(rootProject.file("core/src/test/resources"))
+    sourceSets.getByName("androidTest").java.srcDir(rootProject.file("core/src/conformanceTest/kotlin"))
 }
 
 dependencies {
