@@ -49,6 +49,7 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -94,6 +95,7 @@ import com.lumenopen.lumenbox.conversation.ChatScrollAnchorMachine
 import com.lumenopen.lumenbox.conversation.ChatScrollAnchorState
 import com.lumenopen.lumenbox.conversation.CodeTokenKind
 import com.lumenopen.lumenbox.conversation.CommittedMessage
+import com.lumenopen.lumenbox.conversation.ComposerLexicalTriggerParser
 import com.lumenopen.lumenbox.conversation.ConversationAndBoardCoordinator
 import com.lumenopen.lumenbox.conversation.ConversationHapticMoment
 import com.lumenopen.lumenbox.conversation.ConversationHapticTriggerDetector
@@ -105,7 +107,9 @@ import com.lumenopen.lumenbox.conversation.DeliverablePreviewTicket
 import com.lumenopen.lumenbox.conversation.HapticObservationSnapshot
 import com.lumenopen.lumenbox.conversation.HonestWorkingIndicatorState
 import com.lumenopen.lumenbox.conversation.HonestWorkingPhase
+import com.lumenopen.lumenbox.conversation.DefaultStarterTemplates
 import com.lumenopen.lumenbox.conversation.HonestWorkingStateMachine
+import com.lumenopen.lumenbox.conversation.LightManagementCoordinator
 import com.lumenopen.lumenbox.conversation.LiveTurnDraft
 import com.lumenopen.lumenbox.conversation.LocalUploadAttachment
 import com.lumenopen.lumenbox.conversation.MarkdownBlock
@@ -113,7 +117,10 @@ import com.lumenopen.lumenbox.conversation.MarkdownBlockParser
 import com.lumenopen.lumenbox.conversation.MessageRole
 import com.lumenopen.lumenbox.conversation.ProcessDisclosurePill
 import com.lumenopen.lumenbox.conversation.ShowUiCard
+import com.lumenopen.lumenbox.conversation.SlashSkillSummary
+import com.lumenopen.lumenbox.conversation.StarterTemplateSummary
 import com.lumenopen.lumenbox.conversation.ToolRunStatus
+import com.lumenopen.lumenbox.desktop.AgentDesktopSummary
 import com.lumenopen.lumenbox.conversation.ToolTimelineEntry
 import com.lumenopen.lumenbox.conversation.VirtualizedChatTimelineItem
 import com.lumenopen.lumenbox.conversation.WorkItemSummary
@@ -142,6 +149,7 @@ fun ConversationsSection(
     connectionId: String,
     isOnline: Boolean,
     coordinator: ConversationAndBoardCoordinator,
+    lightManagementCoordinator: LightManagementCoordinator? = null,
     selectedConversationId: String?,
     onSelectConversationId: (String?) -> Unit,
     onOpenDeliverableId: (String) -> Unit,
@@ -155,6 +163,18 @@ fun ConversationsSection(
     var conversations by remember(connectionId) {
         mutableStateOf(coordinator.readCachedConversations())
     }
+    var agents by remember(connectionId) {
+        mutableStateOf(lightManagementCoordinator?.readCachedAgents().orEmpty())
+    }
+    var templates by remember(connectionId) {
+        mutableStateOf(lightManagementCoordinator?.readCachedTemplates() ?: DefaultStarterTemplates.items)
+    }
+    var skills by remember(connectionId) {
+        mutableStateOf(lightManagementCoordinator?.readCachedSkills().orEmpty())
+    }
+    var showNewConversationSheet by remember(connectionId) { mutableStateOf(false) }
+    var creatingConversation by remember(connectionId) { mutableStateOf(false) }
+    var createConversationError by remember(connectionId) { mutableStateOf<String?>(null) }
     var messages by remember(connectionId, selectedConversationId) {
         mutableStateOf(
             if (selectedConversationId != null) coordinator.readCachedMessages(selectedConversationId)
@@ -165,11 +185,22 @@ fun ConversationsSection(
 
     LaunchedEffect(connectionId, isOnline) {
         conversations = coordinator.readCachedConversations()
+        lightManagementCoordinator?.let { lm ->
+            agents = lm.readCachedAgents()
+            templates = lm.readCachedTemplates()
+            skills = lm.readCachedSkills()
+        }
         if (isOnline) {
             runCatching {
+                lightManagementCoordinator?.flushPendingConversationCreations()
                 coordinator.flushPendingConversationsQueue()
                 coordinator.syncDurableChanges()
                 conversations = coordinator.refreshConversations()
+                lightManagementCoordinator?.let { lm ->
+                    agents = runCatching { lm.refreshAgents() }.getOrDefault(agents)
+                    templates = runCatching { lm.refreshTemplates() }.getOrDefault(templates)
+                    skills = runCatching { lm.refreshSkills() }.getOrDefault(skills)
+                }
             }.onFailure { err ->
                 if (err is ApiEnvelopeException && err.envelope.isAccessRemoved) {
                     onAccessRemoved?.invoke()
@@ -208,13 +239,19 @@ fun ConversationsSection(
         ConversationDirectoryScreen(
             conversations = conversations,
             isHostReachable = isOnline,
-            pendingPromptCount = coordinator.pendingPromptCount(),
+            pendingPromptCount = coordinator.pendingPromptCount() + (lightManagementCoordinator?.pendingCreateConversationCount() ?: 0),
             durableSeq = coordinator.currentDurableSeq(),
             feedback = feedback,
+            canCreateConversation = lightManagementCoordinator != null,
+            onStartNewConversation = {
+                createConversationError = null
+                showNewConversationSheet = true
+            },
             onRefresh = {
                 scope.launch {
                     feedback = null
                     runCatching {
+                        lightManagementCoordinator?.flushPendingConversationCreations()
                         coordinator.flushPendingConversationsQueue()
                         coordinator.syncDurableChanges()
                         conversations = coordinator.refreshConversations()
@@ -230,6 +267,50 @@ fun ConversationsSection(
             onOpenConversation = { convId -> onSelectConversationId(convId) },
             modifier = modifier,
         )
+
+        if (showNewConversationSheet && lightManagementCoordinator != null) {
+            NewConversationRosterSheet(
+                agents = agents,
+                templates = templates,
+                isHostReachable = isOnline,
+                isSubmitting = creatingConversation,
+                errorMessage = createConversationError,
+                onDismiss = { showNewConversationSheet = false },
+                onCreateRequested = { primaryId, primaryName, participantIds, title, templateId, initialText ->
+                    creatingConversation = true
+                    createConversationError = null
+                    scope.launch {
+                        try {
+                            val created = lightManagementCoordinator.createConversation(
+                                primaryAgentId = primaryId,
+                                primaryAgentName = primaryName,
+                                participantAgentIds = participantIds,
+                                title = title,
+                                templateId = templateId,
+                                initialText = initialText,
+                            )
+                            conversations = coordinator.readCachedConversations()
+                            if (lightManagementCoordinator.pendingCreateConversationCount() > 0) {
+                                OutboundSyncWorker.enqueueForConnection(context, connectionId)
+                            }
+                            showNewConversationSheet = false
+                            onSelectConversationId(created.id)
+                        } catch (err: ApiEnvelopeException) {
+                            if (err.envelope.isAccessRemoved) {
+                                showNewConversationSheet = false
+                                onAccessRemoved?.invoke()
+                            } else {
+                                createConversationError = "创建会话失败（${err.envelope.code}）：${err.envelope.error}"
+                            }
+                        } catch (err: Throwable) {
+                            createConversationError = err.message ?: "创建会话失败"
+                        } finally {
+                            creatingConversation = false
+                        }
+                    }
+                },
+            )
+        }
     } else {
         val summary = conversations.firstOrNull { it.id == selectedConversationId }
         val activeLiveTurn = liveTurnsMap[selectedConversationId]
@@ -238,6 +319,9 @@ fun ConversationsSection(
             summary = summary,
             messages = messages,
             liveTurn = activeLiveTurn,
+            agents = agents,
+            templates = templates,
+            skills = skills,
             isHostReachable = isOnline,
             feedback = feedback,
             onBackToList = { onSelectConversationId(null) },
@@ -314,12 +398,15 @@ private fun ConversationDirectoryScreen(
     pendingPromptCount: Int,
     durableSeq: Long,
     feedback: String?,
+    canCreateConversation: Boolean,
+    onStartNewConversation: () -> Unit,
     onRefresh: () -> Unit,
     onOpenConversation: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    Box(modifier = modifier.fillMaxSize()) {
     Column(
-        modifier = modifier
+        modifier = Modifier
             .fillMaxSize()
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -411,8 +498,13 @@ private fun ConversationDirectoryScreen(
                                     )
                                 }
                             }
+                            val collabTag = if (conv.participantAgentIds.size > 1) {
+                                "${conv.agentName ?: conv.agentId} 等 ${conv.participantAgentIds.size} 人协同"
+                            } else {
+                                conv.agentName ?: conv.agentId
+                            }
                             Text(
-                                listOfNotNull(conv.agentName ?: conv.agentId, conv.updatedAt).joinToString(" · "),
+                                listOfNotNull(collabTag, conv.updatedAt).joinToString(" · "),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -430,6 +522,18 @@ private fun ConversationDirectoryScreen(
             }
         }
     }
+
+    if (canCreateConversation) {
+        ExtendedFloatingActionButton(
+            onClick = onStartNewConversation,
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(16.dp),
+        ) {
+            Text("+ 新建会话")
+        }
+    }
+    }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -439,6 +543,9 @@ private fun ImmersiveStreamingConversationScreen(
     summary: ConversationSummary?,
     messages: List<CommittedMessage>,
     liveTurn: LiveTurnDraft?,
+    agents: List<AgentDesktopSummary>,
+    templates: List<StarterTemplateSummary>,
+    skills: List<SlashSkillSummary>,
     isHostReachable: Boolean,
     feedback: String?,
     onBackToList: () -> Unit,
@@ -795,17 +902,19 @@ private fun ImmersiveStreamingConversationScreen(
                 .weight(1f),
         ) {
             if (timelineItems.isEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(24.dp),
-                    contentAlignment = Alignment.Center,
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(vertical = 12.dp),
                 ) {
-                    Text(
-                        "发送文字、图片、文件或语音开始协作。",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    item(key = "empty_starter_templates", contentType = "starter_templates") {
+                        EmptyConversationStarterTemplatesView(
+                            templates = templates,
+                            onSelectTemplate = { tpl ->
+                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                inputDraft = tpl.promptTemplate
+                            },
+                        )
+                    }
                 }
             } else {
                 LazyColumn(
@@ -912,10 +1021,27 @@ private fun ImmersiveStreamingConversationScreen(
                 }
 
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    AssistChip(
+                        onClick = {
+                            val prefix = if (inputDraft.isEmpty() || inputDraft.endsWith(" ")) "@" else " @"
+                            inputDraft += prefix
+                        },
+                        label = { Text("@ 提及") },
+                    )
+                    AssistChip(
+                        onClick = {
+                            if (!inputDraft.trimStart().startsWith("/")) {
+                                inputDraft = "/$inputDraft"
+                            }
+                        },
+                        label = { Text("/ 技能") },
+                    )
                     AssistChip(
                         onClick = {
                             localPickerError = null
@@ -978,6 +1104,35 @@ private fun ImmersiveStreamingConversationScreen(
                             }
                         },
                         label = { Text(if (isRecording) "● 完成录音" else "+ 语音") },
+                    )
+                }
+
+                val activeLexicalTrigger = remember(inputDraft) {
+                    ComposerLexicalTriggerParser.detect(inputDraft)
+                }
+                if (activeLexicalTrigger != null) {
+                    ComposerAutocompleteSuggestionBar(
+                        trigger = activeLexicalTrigger,
+                        agents = agents,
+                        skills = skills,
+                        onPickAgent = { pickedAgent ->
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            val (nextText, _) = ComposerLexicalTriggerParser.applyAgentMention(
+                                originalText = inputDraft,
+                                trigger = activeLexicalTrigger,
+                                agentNameOrId = pickedAgent.name.ifBlank { pickedAgent.id },
+                            )
+                            inputDraft = nextText
+                        },
+                        onPickSkill = { pickedSkill ->
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            val (nextText, _) = ComposerLexicalTriggerParser.applySlashSkill(
+                                originalText = inputDraft,
+                                trigger = activeLexicalTrigger,
+                                skill = pickedSkill,
+                            )
+                            inputDraft = nextText
+                        },
                     )
                 }
 

@@ -52,6 +52,7 @@ import com.lumenopen.lumenbox.app.security.StepUpBiometricGateway
 import com.lumenopen.lumenbox.auth.OAuthExchangeOutcome
 import com.lumenopen.lumenbox.contract.ApiEnvelopeException
 import com.lumenopen.lumenbox.conversation.ConversationAndBoardCoordinator
+import com.lumenopen.lumenbox.conversation.LightManagementCoordinator
 import com.lumenopen.lumenbox.conversation.ConversationHapticMoment
 import com.lumenopen.lumenbox.conversation.ConversationHapticTriggerDetector
 import com.lumenopen.lumenbox.conversation.HapticObservationSnapshot
@@ -98,6 +99,7 @@ enum class WorkspacePrimaryDestination(val label: String, val glyph: String) {
 private enum class RuntimeSubMode(val label: String) {
     DESKTOP("实时桌面"),
     BOARD_DELIVERABLES("看板与交付物"),
+    ROUTINES("定时任务"),
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -414,12 +416,20 @@ fun MultiInstallationShell(
                                     },
                                 )
                             }
+                            val lightManagementCoordinator = remember(selectedProjection.installationId) {
+                                LightManagementCoordinator(
+                                    connectionId = selectedProjection.installationId,
+                                    store = store,
+                                    transportProvider = { personalCoordinator.activeApiTransport() },
+                                )
+                            }
                             PersonalMacInstallationPane(
                                 installationId = selectedProjection.installationId,
                                 store = store,
                                 state = personalState,
                                 inboxCoordinator = inboxCoordinator,
                                 conversationCoordinator = conversationCoordinator,
+                                lightManagementCoordinator = lightManagementCoordinator,
                                 desktopCoordinator = desktopCoordinator,
                                 pushSyncCoordinator = pushSyncCoordinator,
                                 routedOpenTarget = routedOpenTarget,
@@ -485,12 +495,22 @@ fun MultiInstallationShell(
                                     },
                                 )
                             }
+                            val lightManagementCoordinator = remember(selectedProjection.installationId) {
+                                LightManagementCoordinator(
+                                    connectionId = selectedProjection.installationId,
+                                    store = store,
+                                    transportProvider = {
+                                        organisationCoordinator.transportForOrganisation(selectedProjection.installationId)
+                                    },
+                                )
+                            }
                             OrganisationInstallationPane(
                                 projection = selectedProjection,
                                 store = store,
                                 coordinator = organisationCoordinator,
                                 inboxCoordinator = inboxCoordinator,
                                 conversationCoordinator = conversationCoordinator,
+                                lightManagementCoordinator = lightManagementCoordinator,
                                 desktopCoordinator = desktopCoordinator,
                                 pushSyncCoordinator = pushSyncCoordinator,
                                 routedOpenTarget = routedOpenTarget,
@@ -677,6 +697,7 @@ private fun OrganisationInstallationPane(
     coordinator: OrganisationSessionCoordinator,
     inboxCoordinator: NeedsYouInboxCoordinator,
     conversationCoordinator: ConversationAndBoardCoordinator,
+    lightManagementCoordinator: LightManagementCoordinator,
     desktopCoordinator: ReadOnlyDesktopSessionCoordinator,
     pushSyncCoordinator: DevicePushSyncCoordinator?,
     routedOpenTarget: OpenDeepLinkTarget?,
@@ -755,6 +776,7 @@ private fun OrganisationInstallationPane(
         syncError = null
         try {
             inboxCoordinator.flushPendingDecisions()
+            lightManagementCoordinator.flushPendingConversationCreations()
             conversationCoordinator.flushPendingConversationsQueue()
             conversationCoordinator.syncDurableChanges()
             inboxItems = inboxCoordinator.refreshInbox()
@@ -843,6 +865,7 @@ private fun OrganisationInstallationPane(
                         connectionId = connectionId,
                         isOnline = isHostReachable,
                         coordinator = conversationCoordinator,
+                        lightManagementCoordinator = lightManagementCoordinator,
                         selectedConversationId = selectedConversationId,
                         onSelectConversationId = { selectedConversationId = it },
                         onOpenDeliverableId = { delivId ->
@@ -909,6 +932,15 @@ private fun OrganisationInstallationPane(
                                         selectedConversationId = convId
                                         activeDest = WorkspacePrimaryDestination.CONVERSATIONS
                                     },
+                                    onAccessRemoved = { onAccessRemoved(projection.displayName) },
+                                )
+                            }
+
+                            RuntimeSubMode.ROUTINES -> {
+                                RoutineLightManagementSection(
+                                    connectionId = connectionId,
+                                    isOnline = isHostReachable,
+                                    coordinator = lightManagementCoordinator,
                                     onAccessRemoved = { onAccessRemoved(projection.displayName) },
                                 )
                             }
@@ -1033,6 +1065,7 @@ private fun PersonalMacInstallationPane(
     state: PersonalMacSessionState,
     inboxCoordinator: NeedsYouInboxCoordinator,
     conversationCoordinator: ConversationAndBoardCoordinator,
+    lightManagementCoordinator: LightManagementCoordinator,
     desktopCoordinator: ReadOnlyDesktopSessionCoordinator,
     pushSyncCoordinator: DevicePushSyncCoordinator?,
     routedOpenTarget: OpenDeepLinkTarget?,
@@ -1106,6 +1139,7 @@ private fun PersonalMacInstallationPane(
         if (isOnline) {
             runCatching {
                 inboxCoordinator.flushPendingDecisions()
+                lightManagementCoordinator.flushPendingConversationCreations()
                 conversationCoordinator.flushPendingConversationsQueue()
                 conversationCoordinator.syncDurableChanges()
                 inboxItems = inboxCoordinator.refreshInbox()
@@ -1202,6 +1236,7 @@ private fun PersonalMacInstallationPane(
                         connectionId = installationId,
                         isOnline = isOnline,
                         coordinator = conversationCoordinator,
+                        lightManagementCoordinator = lightManagementCoordinator,
                         selectedConversationId = selectedConversationId,
                         onSelectConversationId = { selectedConversationId = it },
                         onOpenDeliverableId = { delivId ->
@@ -1266,6 +1301,14 @@ private fun PersonalMacInstallationPane(
                                         selectedConversationId = convId
                                         activeDest = WorkspacePrimaryDestination.CONVERSATIONS
                                     },
+                                )
+                            }
+
+                            RuntimeSubMode.ROUTINES -> {
+                                RoutineLightManagementSection(
+                                    connectionId = installationId,
+                                    isOnline = isOnline,
+                                    coordinator = lightManagementCoordinator,
                                 )
                             }
                         }

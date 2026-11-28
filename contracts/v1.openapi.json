@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "LumenBox Client API",
-    "version": "1.4.0",
+    "version": "1.5.0",
     "description": "Stable /api/v1 client contract (docs/106 §4, docs/110) shared across HTTPS and multiplexed Noise_IK transports."
   },
   "paths": {
@@ -14,7 +14,9 @@
             "description": "Server metadata and installation mode",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/GeneratedServerMeta" }
+                "schema": {
+                  "$ref": "#/components/schemas/GeneratedServerMeta"
+                }
               }
             }
           }
@@ -29,7 +31,9 @@
             "description": "Authenticated principal summary",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/GeneratedPrincipal" }
+                "schema": {
+                  "$ref": "#/components/schemas/GeneratedPrincipal"
+                }
               }
             }
           }
@@ -44,7 +48,9 @@
             "description": "Visible agents and whether each has an active desktop",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/GeneratedAgentPage" }
+                "schema": {
+                  "$ref": "#/components/schemas/GeneratedAgentPage"
+                }
               }
             }
           }
@@ -59,11 +65,15 @@
             "description": "Discriminated decisions waiting on the caller",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/GeneratedInboxPage" }
+                "schema": {
+                  "$ref": "#/components/schemas/GeneratedInboxPage"
+                }
               }
             }
           },
-          "304": { "description": "Unchanged since If-None-Match ETag" }
+          "304": {
+            "description": "Unchanged since If-None-Match ETag"
+          }
         }
       }
     },
@@ -71,13 +81,22 @@
       "post": {
         "operationId": "decideApproval",
         "parameters": [
-          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
         ],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/GeneratedApprovalDecisionRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/GeneratedApprovalDecisionRequest"
+              }
             }
           }
         },
@@ -86,7 +105,9 @@
             "description": "Approval recorded",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/GeneratedActionAck" }
+                "schema": {
+                  "$ref": "#/components/schemas/GeneratedActionAck"
+                }
               }
             }
           }
@@ -97,13 +118,22 @@
       "post": {
         "operationId": "answerInboxItem",
         "parameters": [
-          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
         ],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/GeneratedInboxAnswerRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/GeneratedInboxAnswerRequest"
+              }
             }
           }
         },
@@ -112,7 +142,9 @@
             "description": "Answer recorded or secret stored in vault",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/GeneratedActionAck" }
+                "schema": {
+                  "$ref": "#/components/schemas/GeneratedActionAck"
+                }
               }
             }
           }
@@ -123,13 +155,22 @@
       "post": {
         "operationId": "decideWork",
         "parameters": [
-          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
         ],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/GeneratedWorkDecisionRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/GeneratedWorkDecisionRequest"
+              }
             }
           }
         },
@@ -138,7 +179,9 @@
             "description": "Work decision recorded",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/GeneratedActionAck" }
+                "schema": {
+                  "$ref": "#/components/schemas/GeneratedActionAck"
+                }
               }
             }
           }
@@ -149,14 +192,24 @@
       "get": {
         "operationId": "getNotificationSummary",
         "parameters": [
-          { "name": "seq", "in": "path", "required": true, "schema": { "type": "integer", "format": "int64" } }
+          {
+            "name": "seq",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
         ],
         "responses": {
           "200": {
             "description": "Localized notification title and summary for wake-only push",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/GeneratedNotificationSummary" }
+                "schema": {
+                  "$ref": "#/components/schemas/GeneratedNotificationSummary"
+                }
               }
             }
           }
@@ -167,15 +220,56 @@
       "get": {
         "operationId": "listConversations",
         "parameters": [
-          { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer" } },
-          { "name": "cursor", "in": "query", "required": false, "schema": { "type": "string" } }
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
         ],
         "responses": {
           "200": {
             "description": "Paged conversations",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/GeneratedConversationPage" }
+                "schema": {
+                  "$ref": "#/components/schemas/GeneratedConversationPage"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createConversation",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GeneratedCreateConversationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Conversation created or replayed idempotently",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeneratedCreateConversationResponse"
+                }
               }
             }
           }
@@ -186,16 +280,39 @@
       "get": {
         "operationId": "listConversationMessages",
         "parameters": [
-          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } },
-          { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer" } },
-          { "name": "cursor", "in": "query", "required": false, "schema": { "type": "string" } }
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
         ],
         "responses": {
           "200": {
             "description": "Paged committed messages in a conversation",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/GeneratedMessagePage" }
+                "schema": {
+                  "$ref": "#/components/schemas/GeneratedMessagePage"
+                }
               }
             }
           }
@@ -204,13 +321,22 @@
       "post": {
         "operationId": "sendConversationMessage",
         "parameters": [
-          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
         ],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/GeneratedSendMessageRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/GeneratedSendMessageRequest"
+              }
             }
           }
         },
@@ -219,7 +345,9 @@
             "description": "Message accepted idempotently",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/GeneratedSendMessageAck" }
+                "schema": {
+                  "$ref": "#/components/schemas/GeneratedSendMessageAck"
+                }
               }
             }
           }
@@ -230,13 +358,22 @@
       "post": {
         "operationId": "submitCardAction",
         "parameters": [
-          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
         ],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/GeneratedCardActionRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/GeneratedCardActionRequest"
+              }
             }
           }
         },
@@ -245,7 +382,9 @@
             "description": "ShowUI structured card action accepted",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/GeneratedActionAck" }
+                "schema": {
+                  "$ref": "#/components/schemas/GeneratedActionAck"
+                }
               }
             }
           }
@@ -256,14 +395,23 @@
       "post": {
         "operationId": "stopConversationTurn",
         "parameters": [
-          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
         ],
         "responses": {
           "200": {
             "description": "Active turn stop requested",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/GeneratedActionAck" }
+                "schema": {
+                  "$ref": "#/components/schemas/GeneratedActionAck"
+                }
               }
             }
           }
@@ -277,7 +425,10 @@
           "required": true,
           "content": {
             "application/octet-stream": {
-              "schema": { "type": "string", "format": "binary" }
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
             }
           }
         },
@@ -286,7 +437,9 @@
             "description": "Uploaded attachment descriptor",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/GeneratedUploadDescriptor" }
+                "schema": {
+                  "$ref": "#/components/schemas/GeneratedUploadDescriptor"
+                }
               }
             }
           }
@@ -297,18 +450,55 @@
       "get": {
         "operationId": "listWork",
         "parameters": [
-          { "name": "state", "in": "query", "required": false, "schema": { "type": "string" } },
-          { "name": "agentId", "in": "query", "required": false, "schema": { "type": "string" } },
-          { "name": "waitsOnMe", "in": "query", "required": false, "schema": { "type": "boolean" } },
-          { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer" } },
-          { "name": "cursor", "in": "query", "required": false, "schema": { "type": "string" } }
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "agentId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "waitsOnMe",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
         ],
         "responses": {
           "200": {
             "description": "Paged work items",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/GeneratedWorkPage" }
+                "schema": {
+                  "$ref": "#/components/schemas/GeneratedWorkPage"
+                }
               }
             }
           }
@@ -323,7 +513,9 @@
             "description": "Board columns and ordered cards",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/GeneratedBoardProjection" }
+                "schema": {
+                  "$ref": "#/components/schemas/GeneratedBoardProjection"
+                }
               }
             }
           }
@@ -334,14 +526,23 @@
       "get": {
         "operationId": "getDeliverable",
         "parameters": [
-          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
         ],
         "responses": {
           "200": {
             "description": "Deliverable metadata and short-lived expiring download/preview link",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/GeneratedDeliverableLink" }
+                "schema": {
+                  "$ref": "#/components/schemas/GeneratedDeliverableLink"
+                }
               }
             }
           }
@@ -352,14 +553,24 @@
       "get": {
         "operationId": "getChanges",
         "parameters": [
-          { "name": "since", "in": "query", "required": true, "schema": { "type": "integer", "format": "int64" } }
+          {
+            "name": "since",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
         ],
         "responses": {
           "200": {
             "description": "Durable ledger delta since durableSeq",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/GeneratedChangesResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/GeneratedChangesResponse"
+                }
               }
             }
           }
@@ -370,13 +581,22 @@
       "post": {
         "operationId": "issueDesktopTicket",
         "parameters": [
-          { "name": "agentId", "in": "path", "required": true, "schema": { "type": "string" } }
+          {
+            "name": "agentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
         ],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/GeneratedDesktopTicketRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/GeneratedDesktopTicketRequest"
+              }
             }
           }
         },
@@ -385,7 +605,9 @@
             "description": "60-second single-use view ticket",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/GeneratedDesktopTicketResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/GeneratedDesktopTicketResponse"
+                }
               }
             }
           }
@@ -399,7 +621,9 @@
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/GeneratedDevicePushConfigRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/GeneratedDevicePushConfigRequest"
+              }
             }
           }
         },
@@ -408,7 +632,9 @@
             "description": "Device wake-only push capability and preferences recorded",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/GeneratedActionAck" }
+                "schema": {
+                  "$ref": "#/components/schemas/GeneratedActionAck"
+                }
               }
             }
           }
@@ -421,7 +647,97 @@
             "description": "Device wake-only push capability removed",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/GeneratedActionAck" }
+                "schema": {
+                  "$ref": "#/components/schemas/GeneratedActionAck"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/templates": {
+      "get": {
+        "operationId": "listTemplates",
+        "responses": {
+          "200": {
+            "description": "Available starter conversation and task templates",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeneratedTemplatePage"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/skills": {
+      "get": {
+        "operationId": "listSkills",
+        "responses": {
+          "200": {
+            "description": "Available read-only slash skills in this installation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeneratedSkillPage"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/routines": {
+      "get": {
+        "operationId": "listRoutines",
+        "responses": {
+          "200": {
+            "description": "Visible scheduled routines for the caller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeneratedRoutinePage"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/routines/{id}": {
+      "patch": {
+        "operationId": "patchRoutine",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GeneratedPatchRoutineRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated routine snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GeneratedRoutineSummary"
+                }
               }
             }
           }
@@ -433,446 +749,1136 @@
     "schemas": {
       "GeneratedServerMeta": {
         "type": "object",
-        "required": ["api", "server"],
+        "required": [
+          "api",
+          "server"
+        ],
         "properties": {
-          "api": { "type": "string" },
-          "server": { "type": "string" },
-          "capabilities": { "type": "array", "items": { "type": "string" } },
-          "preview": { "type": "array", "items": { "type": "string" } }
+          "api": {
+            "type": "string"
+          },
+          "server": {
+            "type": "string"
+          },
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "preview": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
         }
       },
       "GeneratedPrincipal": {
         "type": "object",
-        "required": ["id", "name"],
+        "required": [
+          "id",
+          "name"
+        ],
         "properties": {
-          "id": { "type": "string" },
-          "name": { "type": "string" },
-          "role": { "type": "string" }
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          }
         }
       },
       "GeneratedAgentSummary": {
         "type": "object",
-        "required": ["id", "name"],
+        "required": [
+          "id",
+          "name"
+        ],
         "properties": {
-          "id": { "type": "string" },
-          "name": { "type": "string" },
-          "role": { "type": "string" },
-          "status": { "type": "string" },
-          "hasDesktop": { "type": "boolean" }
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "hasDesktop": {
+            "type": "boolean"
+          }
         }
       },
       "GeneratedAgentPage": {
         "type": "object",
-        "required": ["items"],
+        "required": [
+          "items"
+        ],
         "properties": {
           "items": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/GeneratedAgentSummary" }
+            "items": {
+              "$ref": "#/components/schemas/GeneratedAgentSummary"
+            }
           },
-          "nextCursor": { "type": "string" }
+          "nextCursor": {
+            "type": "string"
+          }
         }
       },
       "GeneratedInboxPage": {
         "type": "object",
-        "required": ["items"],
+        "required": [
+          "items"
+        ],
         "properties": {
           "items": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/GeneratedInboxItemWire" }
+            "items": {
+              "$ref": "#/components/schemas/GeneratedInboxItemWire"
+            }
           },
-          "nextCursor": { "type": "string" }
+          "nextCursor": {
+            "type": "string"
+          }
         }
       },
       "GeneratedInboxItemWire": {
         "type": "object",
-        "required": ["id", "kind", "summary"],
+        "required": [
+          "id",
+          "kind",
+          "summary"
+        ],
         "properties": {
-          "id": { "type": "string" },
-          "kind": { "type": "string" },
-          "summary": { "type": "string" },
-          "toolName": { "type": "string" },
-          "stepUpRequired": { "type": "boolean" },
-          "channel": { "type": "string" },
-          "options": { "type": "array", "items": { "type": "string" } },
-          "secretName": { "type": "string" },
-          "workId": { "type": "string" }
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "toolName": {
+            "type": "string"
+          },
+          "stepUpRequired": {
+            "type": "boolean"
+          },
+          "channel": {
+            "type": "string"
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "secretName": {
+            "type": "string"
+          },
+          "workId": {
+            "type": "string"
+          }
         }
       },
       "GeneratedStepUpProofPayload": {
         "type": "object",
-        "required": ["keyId", "approvalId", "decision", "signatureBase64Url"],
+        "required": [
+          "keyId",
+          "approvalId",
+          "decision",
+          "signatureBase64Url"
+        ],
         "properties": {
-          "keyId": { "type": "string" },
-          "approvalId": { "type": "string" },
-          "decision": { "type": "string" },
-          "timestampEpochSeconds": { "type": "integer", "format": "int64" },
-          "nonceBase64Url": { "type": "string" },
-          "signatureBase64Url": { "type": "string" },
-          "assuranceLevel": { "type": "string" },
-          "challengeConfirmationCode": { "type": "string" }
+          "keyId": {
+            "type": "string"
+          },
+          "approvalId": {
+            "type": "string"
+          },
+          "decision": {
+            "type": "string"
+          },
+          "timestampEpochSeconds": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "nonceBase64Url": {
+            "type": "string"
+          },
+          "signatureBase64Url": {
+            "type": "string"
+          },
+          "assuranceLevel": {
+            "type": "string"
+          },
+          "challengeConfirmationCode": {
+            "type": "string"
+          }
         }
       },
       "GeneratedApprovalDecisionRequest": {
         "type": "object",
-        "required": ["action"],
+        "required": [
+          "action"
+        ],
         "properties": {
-          "action": { "type": "string", "enum": ["allow", "deny"] },
-          "scope": { "type": "string", "enum": ["once", "session"] },
-          "reason": { "type": "string" },
-          "stepUpProof": { "$ref": "#/components/schemas/GeneratedStepUpProofPayload" }
+          "action": {
+            "type": "string",
+            "enum": [
+              "allow",
+              "deny"
+            ]
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "once",
+              "session"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "stepUpProof": {
+            "$ref": "#/components/schemas/GeneratedStepUpProofPayload"
+          }
         }
       },
       "GeneratedInboxAnswerRequest": {
         "type": "object",
-        "required": ["kind"],
+        "required": [
+          "kind"
+        ],
         "properties": {
-          "kind": { "type": "string" },
-          "answer": { "type": "string" },
-          "action": { "type": "string" },
-          "secretName": { "type": "string" },
-          "secretValue": { "type": "string" }
+          "kind": {
+            "type": "string"
+          },
+          "answer": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "secretName": {
+            "type": "string"
+          },
+          "secretValue": {
+            "type": "string"
+          }
         }
       },
       "GeneratedWorkDecisionRequest": {
         "type": "object",
-        "required": ["decision"],
+        "required": [
+          "decision"
+        ],
         "properties": {
-          "decision": { "type": "string" },
-          "note": { "type": "string" }
+          "decision": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          }
         }
       },
       "GeneratedActionAck": {
         "type": "object",
-        "required": ["ok"],
+        "required": [
+          "ok"
+        ],
         "properties": {
-          "ok": { "type": "boolean" },
-          "durableSeq": { "type": "integer", "format": "int64" }
+          "ok": {
+            "type": "boolean"
+          },
+          "durableSeq": {
+            "type": "integer",
+            "format": "int64"
+          }
         }
       },
       "GeneratedNotificationSummary": {
         "type": "object",
-        "required": ["seq", "kind", "title", "body", "createdAt"],
+        "required": [
+          "seq",
+          "kind",
+          "title",
+          "body",
+          "createdAt"
+        ],
         "properties": {
-          "seq": { "type": "integer", "format": "int64" },
-          "kind": { "type": "string" },
-          "title": { "type": "string" },
-          "body": { "type": "string" },
-          "createdAt": { "type": "string" },
-          "inboxId": { "type": "string" },
-          "conversationId": { "type": "string" },
-          "workId": { "type": "string" }
+          "seq": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "inboxId": {
+            "type": "string"
+          },
+          "conversationId": {
+            "type": "string"
+          },
+          "workId": {
+            "type": "string"
+          }
         }
       },
       "GeneratedConversationSummary": {
         "type": "object",
-        "required": ["id", "title", "agentId", "updatedAt"],
+        "required": [
+          "id",
+          "title",
+          "agentId",
+          "updatedAt"
+        ],
         "properties": {
-          "id": { "type": "string" },
-          "title": { "type": "string" },
-          "agentId": { "type": "string" },
-          "agentName": { "type": "string" },
-          "updatedAt": { "type": "string" },
-          "running": { "type": "boolean" },
-          "lastMessagePreview": { "type": "string" }
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "agentId": {
+            "type": "string"
+          },
+          "agentName": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          },
+          "running": {
+            "type": "boolean"
+          },
+          "lastMessagePreview": {
+            "type": "string"
+          },
+          "participantAgentIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
         }
       },
       "GeneratedConversationPage": {
         "type": "object",
-        "required": ["items"],
+        "required": [
+          "items"
+        ],
         "properties": {
           "items": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/GeneratedConversationSummary" }
+            "items": {
+              "$ref": "#/components/schemas/GeneratedConversationSummary"
+            }
           },
-          "nextCursor": { "type": "string" }
+          "nextCursor": {
+            "type": "string"
+          }
         }
       },
       "GeneratedAttachmentRef": {
         "type": "object",
-        "required": ["id", "name", "mimeType"],
+        "required": [
+          "id",
+          "name",
+          "mimeType"
+        ],
         "properties": {
-          "id": { "type": "string" },
-          "name": { "type": "string" },
-          "mimeType": { "type": "string" },
-          "kind": { "type": "string" },
-          "sizeBytes": { "type": "integer", "format": "int64" }
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "mimeType": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "sizeBytes": {
+            "type": "integer",
+            "format": "int64"
+          }
         }
       },
       "GeneratedToolCallSummary": {
         "type": "object",
-        "required": ["id", "name", "status"],
+        "required": [
+          "id",
+          "name",
+          "status"
+        ],
         "properties": {
-          "id": { "type": "string" },
-          "name": { "type": "string" },
-          "status": { "type": "string" },
-          "summary": { "type": "string" }
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          }
         }
       },
       "GeneratedShowUiActionOption": {
         "type": "object",
-        "required": ["actionId", "label"],
+        "required": [
+          "actionId",
+          "label"
+        ],
         "properties": {
-          "actionId": { "type": "string" },
-          "label": { "type": "string" },
-          "style": { "type": "string" }
+          "actionId": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "style": {
+            "type": "string"
+          }
         }
       },
       "GeneratedShowUiCard": {
         "type": "object",
-        "required": ["cardId", "title"],
+        "required": [
+          "cardId",
+          "title"
+        ],
         "properties": {
-          "cardId": { "type": "string" },
-          "title": { "type": "string" },
-          "body": { "type": "string" },
+          "cardId": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
           "actions": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/GeneratedShowUiActionOption" }
+            "items": {
+              "$ref": "#/components/schemas/GeneratedShowUiActionOption"
+            }
           }
         }
       },
       "GeneratedConversationMessage": {
         "type": "object",
-        "required": ["id", "conversationId", "role", "text", "createdAt"],
+        "required": [
+          "id",
+          "conversationId",
+          "role",
+          "text",
+          "createdAt"
+        ],
         "properties": {
-          "id": { "type": "string" },
-          "conversationId": { "type": "string" },
-          "clientMessageId": { "type": "string" },
-          "role": { "type": "string" },
-          "text": { "type": "string" },
-          "thinking": { "type": "string" },
-          "createdAt": { "type": "string" },
+          "id": {
+            "type": "string"
+          },
+          "conversationId": {
+            "type": "string"
+          },
+          "clientMessageId": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "thinking": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string"
+          },
           "attachments": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/GeneratedAttachmentRef" }
+            "items": {
+              "$ref": "#/components/schemas/GeneratedAttachmentRef"
+            }
           },
           "toolCalls": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/GeneratedToolCallSummary" }
+            "items": {
+              "$ref": "#/components/schemas/GeneratedToolCallSummary"
+            }
           },
           "cards": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/GeneratedShowUiCard" }
+            "items": {
+              "$ref": "#/components/schemas/GeneratedShowUiCard"
+            }
           },
           "deliverableIds": {
             "type": "array",
-            "items": { "type": "string" }
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
       "GeneratedMessagePage": {
         "type": "object",
-        "required": ["items"],
+        "required": [
+          "items"
+        ],
         "properties": {
           "items": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/GeneratedConversationMessage" }
+            "items": {
+              "$ref": "#/components/schemas/GeneratedConversationMessage"
+            }
           },
-          "nextCursor": { "type": "string" }
+          "nextCursor": {
+            "type": "string"
+          }
         }
       },
       "GeneratedSendMessageRequest": {
         "type": "object",
-        "required": ["clientMessageId", "text"],
+        "required": [
+          "clientMessageId",
+          "text"
+        ],
         "properties": {
-          "clientMessageId": { "type": "string" },
-          "text": { "type": "string" },
+          "clientMessageId": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
           "attachmentIds": {
             "type": "array",
-            "items": { "type": "string" }
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
       "GeneratedSendMessageAck": {
         "type": "object",
-        "required": ["ok", "messageId", "clientMessageId"],
+        "required": [
+          "ok",
+          "messageId",
+          "clientMessageId"
+        ],
         "properties": {
-          "ok": { "type": "boolean" },
-          "messageId": { "type": "string" },
-          "clientMessageId": { "type": "string" },
-          "durableSeq": { "type": "integer", "format": "int64" }
+          "ok": {
+            "type": "boolean"
+          },
+          "messageId": {
+            "type": "string"
+          },
+          "clientMessageId": {
+            "type": "string"
+          },
+          "durableSeq": {
+            "type": "integer",
+            "format": "int64"
+          }
         }
       },
       "GeneratedCardActionRequest": {
         "type": "object",
-        "required": ["clientMessageId", "cardId", "actionId"],
+        "required": [
+          "clientMessageId",
+          "cardId",
+          "actionId"
+        ],
         "properties": {
-          "clientMessageId": { "type": "string" },
-          "cardId": { "type": "string" },
-          "actionId": { "type": "string" },
+          "clientMessageId": {
+            "type": "string"
+          },
+          "cardId": {
+            "type": "string"
+          },
+          "actionId": {
+            "type": "string"
+          },
           "payload": {
             "type": "object",
-            "additionalProperties": { "type": "string" }
+            "additionalProperties": {
+              "type": "string"
+            }
           }
         }
       },
       "GeneratedUploadDescriptor": {
         "type": "object",
-        "required": ["attachmentId", "name", "mimeType", "sizeBytes"],
+        "required": [
+          "attachmentId",
+          "name",
+          "mimeType",
+          "sizeBytes"
+        ],
         "properties": {
-          "attachmentId": { "type": "string" },
-          "name": { "type": "string" },
-          "mimeType": { "type": "string" },
-          "kind": { "type": "string" },
-          "sizeBytes": { "type": "integer", "format": "int64" },
-          "durableSeq": { "type": "integer", "format": "int64" }
+          "attachmentId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "mimeType": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "sizeBytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "durableSeq": {
+            "type": "integer",
+            "format": "int64"
+          }
         }
       },
       "GeneratedWorkSummary": {
         "type": "object",
-        "required": ["id", "title", "state", "updatedAt"],
+        "required": [
+          "id",
+          "title",
+          "state",
+          "updatedAt"
+        ],
         "properties": {
-          "id": { "type": "string" },
-          "title": { "type": "string" },
-          "state": { "type": "string" },
-          "agentId": { "type": "string" },
-          "agentName": { "type": "string" },
-          "conversationId": { "type": "string" },
-          "waitsOnMe": { "type": "boolean" },
-          "summary": { "type": "string" },
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "agentId": {
+            "type": "string"
+          },
+          "agentName": {
+            "type": "string"
+          },
+          "conversationId": {
+            "type": "string"
+          },
+          "waitsOnMe": {
+            "type": "boolean"
+          },
+          "summary": {
+            "type": "string"
+          },
           "deliverableIds": {
             "type": "array",
-            "items": { "type": "string" }
+            "items": {
+              "type": "string"
+            }
           },
-          "updatedAt": { "type": "string" }
+          "updatedAt": {
+            "type": "string"
+          }
         }
       },
       "GeneratedWorkPage": {
         "type": "object",
-        "required": ["items"],
+        "required": [
+          "items"
+        ],
         "properties": {
           "items": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/GeneratedWorkSummary" }
+            "items": {
+              "$ref": "#/components/schemas/GeneratedWorkSummary"
+            }
           },
-          "nextCursor": { "type": "string" }
+          "nextCursor": {
+            "type": "string"
+          }
         }
       },
       "GeneratedBoardColumn": {
         "type": "object",
-        "required": ["id", "title", "cards"],
+        "required": [
+          "id",
+          "title",
+          "cards"
+        ],
         "properties": {
-          "id": { "type": "string" },
-          "title": { "type": "string" },
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
           "cards": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/GeneratedWorkSummary" }
+            "items": {
+              "$ref": "#/components/schemas/GeneratedWorkSummary"
+            }
           }
         }
       },
       "GeneratedBoardProjection": {
         "type": "object",
-        "required": ["columns"],
+        "required": [
+          "columns"
+        ],
         "properties": {
           "columns": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/GeneratedBoardColumn" }
+            "items": {
+              "$ref": "#/components/schemas/GeneratedBoardColumn"
+            }
           },
-          "updatedAt": { "type": "string" }
+          "updatedAt": {
+            "type": "string"
+          }
         }
       },
       "GeneratedDeliverableSummary": {
         "type": "object",
-        "required": ["id", "title", "mimeType", "createdAt"],
+        "required": [
+          "id",
+          "title",
+          "mimeType",
+          "createdAt"
+        ],
         "properties": {
-          "id": { "type": "string" },
-          "title": { "type": "string" },
-          "mimeType": { "type": "string" },
-          "sizeBytes": { "type": "integer", "format": "int64" },
-          "workId": { "type": "string" },
-          "conversationId": { "type": "string" },
-          "createdAt": { "type": "string" }
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "mimeType": {
+            "type": "string"
+          },
+          "sizeBytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "workId": {
+            "type": "string"
+          },
+          "conversationId": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string"
+          }
         }
       },
       "GeneratedDeliverableLink": {
         "type": "object",
-        "required": ["id", "title", "mimeType", "url", "expiresAt"],
+        "required": [
+          "id",
+          "title",
+          "mimeType",
+          "url",
+          "expiresAt"
+        ],
         "properties": {
-          "id": { "type": "string" },
-          "title": { "type": "string" },
-          "mimeType": { "type": "string" },
-          "sizeBytes": { "type": "integer", "format": "int64" },
-          "url": { "type": "string" },
-          "expiresAt": { "type": "string" },
-          "inlinePreviewText": { "type": "string" }
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "mimeType": {
+            "type": "string"
+          },
+          "sizeBytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "url": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "type": "string"
+          },
+          "inlinePreviewText": {
+            "type": "string"
+          }
         }
       },
       "GeneratedChangesResponse": {
         "type": "object",
-        "required": ["durableSeq"],
+        "required": [
+          "durableSeq"
+        ],
         "properties": {
-          "durableSeq": { "type": "integer", "format": "int64" },
-          "hasMore": { "type": "boolean" },
+          "durableSeq": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "hasMore": {
+            "type": "boolean"
+          },
           "conversations": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/GeneratedConversationSummary" }
+            "items": {
+              "$ref": "#/components/schemas/GeneratedConversationSummary"
+            }
           },
           "messages": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/GeneratedConversationMessage" }
+            "items": {
+              "$ref": "#/components/schemas/GeneratedConversationMessage"
+            }
           },
           "removedConversationIds": {
             "type": "array",
-            "items": { "type": "string" }
+            "items": {
+              "type": "string"
+            }
           },
           "inbox": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/GeneratedInboxItemWire" }
+            "items": {
+              "$ref": "#/components/schemas/GeneratedInboxItemWire"
+            }
           },
           "work": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/GeneratedWorkSummary" }
+            "items": {
+              "$ref": "#/components/schemas/GeneratedWorkSummary"
+            }
           },
           "deliverables": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/GeneratedDeliverableSummary" }
+            "items": {
+              "$ref": "#/components/schemas/GeneratedDeliverableSummary"
+            }
           }
         }
       },
       "GeneratedDesktopTicketRequest": {
         "type": "object",
-        "required": ["mode"],
+        "required": [
+          "mode"
+        ],
         "properties": {
-          "mode": { "type": "string", "enum": ["view"] }
+          "mode": {
+            "type": "string",
+            "enum": [
+              "view"
+            ]
+          }
         }
       },
       "GeneratedDesktopTicketResponse": {
         "type": "object",
-        "required": ["ticket", "path", "expiresInSeconds"],
+        "required": [
+          "ticket",
+          "path",
+          "expiresInSeconds"
+        ],
         "properties": {
-          "ticket": { "type": "string" },
-          "path": { "type": "string" },
-          "wsUrl": { "type": "string" },
-          "expiresInSeconds": { "type": "integer" }
+          "ticket": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "wsUrl": {
+            "type": "string"
+          },
+          "expiresInSeconds": {
+            "type": "integer"
+          }
         }
       },
       "GeneratedQuietHoursWindow": {
         "type": "object",
-        "required": ["startLocalTime", "endLocalTime", "timezone"],
+        "required": [
+          "startLocalTime",
+          "endLocalTime",
+          "timezone"
+        ],
         "properties": {
-          "startLocalTime": { "type": "string" },
-          "endLocalTime": { "type": "string" },
-          "timezone": { "type": "string" }
+          "startLocalTime": {
+            "type": "string"
+          },
+          "endLocalTime": {
+            "type": "string"
+          },
+          "timezone": {
+            "type": "string"
+          }
         }
       },
       "GeneratedDevicePushPreferences": {
         "type": "object",
-        "required": ["level"],
+        "required": [
+          "level"
+        ],
         "properties": {
           "level": {
             "type": "string",
-            "enum": ["needs-you-only", "needs-you-and-completions", "off"]
+            "enum": [
+              "needs-you-only",
+              "needs-you-and-completions",
+              "off"
+            ]
           },
-          "quietHours": { "$ref": "#/components/schemas/GeneratedQuietHoursWindow" }
+          "quietHours": {
+            "$ref": "#/components/schemas/GeneratedQuietHoursWindow"
+          }
         }
       },
       "GeneratedDevicePushConfigRequest": {
         "type": "object",
-        "required": ["pushToken", "connId", "preferences"],
+        "required": [
+          "pushToken",
+          "connId",
+          "preferences"
+        ],
         "properties": {
-          "pushToken": { "type": "string" },
-          "connId": { "type": "string" },
-          "channel": { "type": "string" },
-          "preferences": { "$ref": "#/components/schemas/GeneratedDevicePushPreferences" }
+          "pushToken": {
+            "type": "string"
+          },
+          "connId": {
+            "type": "string"
+          },
+          "channel": {
+            "type": "string"
+          },
+          "preferences": {
+            "$ref": "#/components/schemas/GeneratedDevicePushPreferences"
+          }
+        }
+      },
+      "GeneratedCreateConversationRequest": {
+        "type": "object",
+        "required": [
+          "agentId"
+        ],
+        "properties": {
+          "clientConversationKey": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "agentId": {
+            "type": "string"
+          },
+          "participantAgentIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "templateId": {
+            "type": "string"
+          },
+          "initialText": {
+            "type": "string"
+          },
+          "attachmentIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "GeneratedCreateConversationResponse": {
+        "type": "object",
+        "required": [
+          "conversation"
+        ],
+        "properties": {
+          "conversation": {
+            "$ref": "#/components/schemas/GeneratedConversationSummary"
+          },
+          "initialMessage": {
+            "$ref": "#/components/schemas/GeneratedConversationMessage"
+          },
+          "durableSeq": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "GeneratedStarterTemplate": {
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "promptTemplate"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "promptTemplate": {
+            "type": "string"
+          },
+          "recommendedAgentId": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          }
+        }
+      },
+      "GeneratedTemplatePage": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GeneratedStarterTemplate"
+            }
+          }
+        }
+      },
+      "GeneratedSlashSkillSummary": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "argumentHint": {
+            "type": "string"
+          }
+        }
+      },
+      "GeneratedSkillPage": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GeneratedSlashSkillSummary"
+            }
+          }
+        }
+      },
+      "GeneratedRoutineSummary": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "schedule",
+          "enabled"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "agentId": {
+            "type": "string"
+          },
+          "agentName": {
+            "type": "string"
+          },
+          "schedule": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "muted": {
+            "type": "boolean"
+          },
+          "nextRunAt": {
+            "type": "string"
+          },
+          "lastRunAt": {
+            "type": "string"
+          },
+          "lastStatus": {
+            "type": "string"
+          },
+          "spendGuardPaused": {
+            "type": "boolean"
+          },
+          "spendGuardReason": {
+            "type": "string"
+          }
+        }
+      },
+      "GeneratedRoutinePage": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GeneratedRoutineSummary"
+            }
+          },
+          "durableSeq": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "GeneratedPatchRoutineRequest": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "muted": {
+            "type": "boolean"
+          },
+          "schedule": {
+            "type": "string"
+          }
         }
       }
     }

@@ -150,6 +150,7 @@ data class ConversationSummary(
     val title: String,
     val agentId: String,
     val agentName: String? = null,
+    val participantAgentIds: List<String> = emptyList(),
     val updatedAt: String,
     val running: Boolean = false,
     val lastMessagePreview: String? = null,

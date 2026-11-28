@@ -1075,6 +1075,7 @@ class ConversationAndBoardCoordinator(
         title = title,
         agentId = agentId,
         agentName = agentName,
+        participantAgentIds = participantAgentIds.orEmpty(),
         updatedAt = updatedAt,
         running = running ?: false,
         lastMessagePreview = lastMessagePreview,
